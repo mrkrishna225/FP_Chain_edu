@@ -1,0 +1,84 @@
+[
+  {
+    "inputs": [
+      { "internalType": "address", "name": "_roleManager", "type": "address" },
+      { "internalType": "address", "name": "_auditLog", "type": "address" }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "student", "type": "address" },
+      { "internalType": "uint256", "name": "examId", "type": "uint256" },
+      { "internalType": "bytes32", "name": "resultHash", "type": "bytes32" },
+      { "internalType": "string", "name": "ipfsCID", "type": "string" },
+      { "internalType": "uint256", "name": "score", "type": "uint256" },
+      { "internalType": "uint256", "name": "totalQuestions", "type": "uint256" }
+    ],
+    "name": "submitResult",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "student", "type": "address" },
+      { "internalType": "uint256", "name": "examId", "type": "uint256" }
+    ],
+    "name": "getResultHistory",
+    "outputs": [
+      {
+        "components": [
+          { "internalType": "bytes32", "name": "resultHash", "type": "bytes32" },
+          { "internalType": "string", "name": "ipfsCID", "type": "string" },
+          { "internalType": "uint256", "name": "timestamp", "type": "uint256" },
+          { "internalType": "address", "name": "submittedBy", "type": "address" },
+          { "internalType": "bool", "name": "isUpdate", "type": "bool" },
+          { "internalType": "uint256", "name": "score", "type": "uint256" },
+          { "internalType": "uint256", "name": "totalQuestions", "type": "uint256" }
+        ],
+        "internalType": "struct ResultLedger.ResultEntry[]",
+        "name": "",
+        "type": "tuple[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "student", "type": "address" },
+      { "internalType": "uint256", "name": "examId", "type": "uint256" }
+    ],
+    "name": "getLatestResult",
+    "outputs": [
+      {
+        "components": [
+          { "internalType": "bytes32", "name": "resultHash", "type": "bytes32" },
+          { "internalType": "string", "name": "ipfsCID", "type": "string" },
+          { "internalType": "uint256", "name": "timestamp", "type": "uint256" },
+          { "internalType": "address", "name": "submittedBy", "type": "address" },
+          { "internalType": "bool", "name": "isUpdate", "type": "bool" },
+          { "internalType": "uint256", "name": "score", "type": "uint256" },
+          { "internalType": "uint256", "name": "totalQuestions", "type": "uint256" }
+        ],
+        "internalType": "struct ResultLedger.ResultEntry",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "student", "type": "address" },
+      { "internalType": "uint256", "name": "examId", "type": "uint256" }
+    ],
+    "name": "getResultCount",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]

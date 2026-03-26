@@ -1,0 +1,99 @@
+[
+  {
+    "inputs": [
+      { "internalType": "address", "name": "_roleManager", "type": "address" },
+      { "internalType": "address", "name": "_auditLog", "type": "address" }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      { "internalType": "string", "name": "encryptedPaperCID", "type": "string" },
+      { "internalType": "string", "name": "encryptedAnswerCID", "type": "string" },
+      { "internalType": "string", "name": "name", "type": "string" },
+      { "internalType": "uint256", "name": "startTime", "type": "uint256" },
+      { "internalType": "uint256", "name": "duration", "type": "uint256" },
+      { "internalType": "address[]", "name": "allowedStudents", "type": "address[]" }
+    ],
+    "name": "scheduleExam",
+    "outputs": [{ "internalType": "uint256", "name": "examId", "type": "uint256" }],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "examId", "type": "uint256" },
+      { "internalType": "string", "name": "newAnswerCID", "type": "string" }
+    ],
+    "name": "updateAnswerCID",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "examId", "type": "uint256" },
+      { "internalType": "address", "name": "student", "type": "address" }
+    ],
+    "name": "permitStudentRestart",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "examId", "type": "uint256" }],
+    "name": "logDisconnect",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "examId", "type": "uint256" }],
+    "name": "consumeRestart",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "examId", "type": "uint256" }],
+    "name": "markSubmitted",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "examId", "type": "uint256" },
+      { "internalType": "address", "name": "student", "type": "address" }
+    ],
+    "name": "isAllowed",
+    "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "examId", "type": "uint256" }],
+    "name": "isExamLive",
+    "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "examId", "type": "uint256" },
+      { "internalType": "address", "name": "student", "type": "address" }
+    ],
+    "name": "canStudentStart",
+    "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "name": "examCount",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]
