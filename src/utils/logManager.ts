@@ -1,24 +1,5 @@
-/**
- * src/utils/logManager.ts
- *
- * Centralized log writing and management for ChainEdu.
- *
- * Rules:
- *  - Event logs (non-result logs) auto-expire after 2 years
- *  - Result/answer-update logs are NEVER deleted
- *  - Only admin/teacher can read result logs — enforced at frontend route level
- *  - No one can delete logs (no delete function exposed)
- *
- * Log paths:
- *  - Teacher action log:   /chainedu/teachers/{addr}/logs/{timestamp}.json
- *  - Exam event log:       /chainedu/teachers/{addr}/exams/{examId}/logs/{ts}.json
- *  - Student action log:   /chainedu/students/{addr}/logs/{timestamp}.json
- */
-
 import { mfsWriteJSON, mfsReadJSON, mfsList } from './mfs';
 import { MFS } from './mfs';
-
-// ─── Types ───────────────────────────────────────────────────
 
 export type LogLevel = 'info' | 'warning' | 'error' | 'critical';
 export type LogCategory =
@@ -34,28 +15,23 @@ export type LogCategory =
   | 'general';
 
 export interface LogEntry {
-  timestamp: number;      // unix ms
+  timestamp: number;
   category: LogCategory;
   level: LogLevel;
-  actor: string;          // wallet address of who triggered this
-  subject: string;        // wallet/exam/resource affected
-  message: string;        // human-readable
-  metadata?: Record<string, unknown>; // extra structured data
-  isResultLog: boolean;   // true = never auto-delete
-  createdAt: number;      // same as timestamp, for 2-year expiry check
+  actor: string;
+  subject: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+  isResultLog: boolean;
+  createdAt: number;
 }
 
-// ─── Two-year expiry constant ────────────────────────────────
 const TWO_YEARS_MS = 2 * 365 * 24 * 60 * 60 * 1000;
 
-// ─── Internal writer ─────────────────────────────────────────
 async function writeLog(path: string, entry: LogEntry): Promise<void> {
   await mfsWriteJSON(path, entry);
 }
 
-// ─── Public Loggers ──────────────────────────────────────────
-
-/** Log a teacher action (exam upload, answer update, etc.) */
 export async function logTeacherAction(
   teacherAddr: string,
   category: LogCategory,
@@ -78,7 +54,6 @@ export async function logTeacherAction(
   await writeLog(MFS.teacherLog(teacherAddr, ts), entry);
 }
 
-/** Log an exam-specific event */
 export async function logExamEvent(
   teacherAddr: string,
   examId: string,
@@ -102,7 +77,6 @@ export async function logExamEvent(
   await writeLog(MFS.examLog(teacherAddr, examId, ts), entry);
 }
 
-/** Log a student action (exam start, network loss, submit, etc.) */
 export async function logStudentAction(
   studentAddr: string,
   category: LogCategory,
@@ -125,9 +99,6 @@ export async function logStudentAction(
   await writeLog(MFS.studentLog(studentAddr, ts), entry);
 }
 
-// ─── Log Readers ─────────────────────────────────────────────
-
-/** Read all teacher-level logs (sorted newest first) */
 export async function getTeacherLogs(teacherAddr: string): Promise<LogEntry[]> {
   const addr = teacherAddr.toLowerCase();
   const basePath = `/chainedu/teachers/${addr}/logs`;
@@ -142,7 +113,6 @@ export async function getTeacherLogs(teacherAddr: string): Promise<LogEntry[]> {
   return logs.sort((a, b) => b.timestamp - a.timestamp);
 }
 
-/** Read all exam-specific logs */
 export async function getExamLogs(
   teacherAddr: string,
   examId: string,
@@ -160,7 +130,6 @@ export async function getExamLogs(
   return logs.sort((a, b) => b.timestamp - a.timestamp);
 }
 
-/** Read all student logs */
 export async function getStudentLogs(studentAddr: string): Promise<LogEntry[]> {
   const addr = studentAddr.toLowerCase();
   const basePath = `/chainedu/students/${addr}/logs`;
@@ -175,10 +144,6 @@ export async function getStudentLogs(studentAddr: string): Promise<LogEntry[]> {
   return logs.sort((a, b) => b.timestamp - a.timestamp);
 }
 
-// ─── Auto-Expiry Cleanup ─────────────────────────────────────
-// Called on app startup. Removes non-result logs older than 2 years.
-// Result logs (isResultLog=true) are NEVER deleted.
-
 import { mfsRemove } from './mfs';
 
 export async function runLogExpiryCleanup(): Promise<{
@@ -189,7 +154,6 @@ export async function runLogExpiryCleanup(): Promise<{
   let scanned = 0;
   let deleted = 0;
 
-  // Helper to clean a log directory
   async function cleanDir(basePath: string, pathBuilder: (ts: number) => string) {
     const files = await mfsList(basePath);
     for (const f of files) {
@@ -207,8 +171,6 @@ export async function runLogExpiryCleanup(): Promise<{
     }
   }
 
-  // We don't know all teacher/student addresses, so we scan the directories.
-  // In a large deployment this would be a background job. Here it runs on startup.
   try {
     const teacherDirs = await mfsList('/chainedu/teachers');
     for (const tDir of teacherDirs) {
@@ -217,7 +179,6 @@ export async function runLogExpiryCleanup(): Promise<{
         `/chainedu/teachers/${addr}/logs`,
         (ts) => MFS.teacherLog(addr, ts),
       );
-      // Also scan per-exam logs
       const examDirs = await mfsList(`/chainedu/teachers/${addr}/exams`);
       for (const examId of examDirs) {
         await cleanDir(
@@ -238,7 +199,7 @@ export async function runLogExpiryCleanup(): Promise<{
   } catch (err) {
     console.warn('[LogManager] Expiry cleanup scan error:', err);
   }
-
   
   return { scanned, deleted };
 }
+

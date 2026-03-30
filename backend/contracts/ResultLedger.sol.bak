@@ -41,9 +41,6 @@ contract ResultLedger {
 
     mapping(address => mapping(uint256 => ResultEntry[])) private _results;
     mapping(address => mapping(uint256 => bool)) public hasSubmitted;
-    
-    // Internal registry for exam-to-teacher mapping (Self-contained verification)
-    mapping(uint256 => address) public examTeachers;
 
     event ResultSubmitted(
         address indexed student,
@@ -73,7 +70,7 @@ contract ResultLedger {
     ) external noReentrant {
         bool isTeacher = roleManager.isTeacher(msg.sender);
         bool isStudent = roleManager.isStudent(msg.sender);
-        require(isTeacher || isStudent || roleManager.isAdmin(msg.sender), "ResultLedger: unauthorized sender");
+        require(isTeacher || isStudent, "ResultLedger: unauthorized sender");
 
         // 1. If student submits: must be first time
         if (isStudent && !isTeacher) {
@@ -82,30 +79,11 @@ contract ResultLedger {
             hasSubmitted[student][examId] = true;
         }
 
-        // 2. Teacher Verification & Locking
+        // 2. If teacher updates: Must be original exam teacher
         bool isUpdate = _results[student][examId].length > 0;
-        
-        // Lock teacher of this exam upon first submission/update
-        if (examTeachers[examId] == address(0) && isTeacher) {
-             examTeachers[examId] = msg.sender;
-        }
-        
-        if (isTeacher) {
-             // Verify this teacher owns this specific exam record
-             // Fallback to ExamManager only if internal registry is empty
-             if (examTeachers[examId] != address(0)) {
-                 require(msg.sender == examTeachers[examId], "ResultLedger: not registered teacher");
-             } else {
-                 try IExamManager(examManager).getExam(examId) returns (string memory, string memory, address teacherAddr, string memory, uint256, uint256, bool) {
-                     if (teacherAddr != address(0)) {
-                         require(msg.sender == teacherAddr, "ResultLedger: not exam teacher");
-                         examTeachers[examId] = teacherAddr;
-                     }
-                 } catch {
-                     // If ExamManager fails (hashed ID used), we rely on role only for first call
-                     examTeachers[examId] = msg.sender;
-                 }
-             }
+        if (isUpdate && isTeacher) {
+             (, , address teacherAddr, , , , ) = IExamManager(examManager).getExam(examId);
+             require(msg.sender == teacherAddr, "ResultLedger: not exam teacher");
         }
 
         _results[student][examId].push(ResultEntry({

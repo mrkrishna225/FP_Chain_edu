@@ -1,374 +1,344 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { GlassCard } from '@/components/shared/GlassCard';
-import { StatusBadge } from '@/components/shared/Badges';
-import { TxHashDisplay, CIDDisplay } from '@/components/shared/HashDisplays';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { ChevronLeft, ChevronRight, Flag, Check, Lock, Upload, Shield, Link as LinkIcon, Download, ExternalLink } from 'lucide-react';
+import { useWallet } from '@/context/WalletContext';
+import { mfsWriteJSON, mfsReadJSON, mfsAppendBinary, mfsReadCSV } from '@/utils/mfs';
+import { ipfsAdd } from '@/utils/ipfs';
+import { EncryptionUtils } from '@/encryption';
+import { ResultLedgerContract, toBytes32 } from '@/utils/contractUtils';
+import { getQuestionPaper, isExamActiveNow, getExamSchedules, type ExamSchedule, type Question, type StudentResult } from '@/utils/examUtils';
+import { Shield, Clock, AlertTriangle, Monitor, Mic, Camera, Eye, EyeOff, AlertCircle, ChevronLeft, ChevronRight, CheckSquare } from 'lucide-react';
+import { useNotifications } from '@/hooks/useNotifications';
+import { toast } from 'sonner';
 
-import { useWeb3 } from '@/hooks/useWeb3';
-import { useContract } from '@/hooks/useContract';
-import { getIPFSClient, ipfsCat, ipfsAdd } from '@/utils/ipfs';
-import { decryptAES, encryptAES, examPassword, resultPassword, sha256Hex } from '@/utils/aes';
-import { mfsWriteJSON, mfsReadJSON } from '@/utils/mfs';
-import toast from 'react-hot-toast';
+interface QuestionWithCorrect extends Question {
+  correctIndex?: number;
+}
 
 export default function ActiveExam() {
-  const { examId } = useParams();
+  const { examId } = useParams<{ examId: string }>();
   const navigate = useNavigate();
-  const { account, web3 } = useWeb3();
-  const { getExamManager, getResultLedger } = useContract(web3);
+  const { address } = useWallet();
+  const { addNotification } = useNotifications();
 
-  const [loading, setLoading] = useState(true);
-  const [examData, setExamData] = useState(null);
-  const [questions, setQuestions] = useState([]);
-  
+  const [phase, setPhase] = useState<'checking' | 'instructions' | 'exam' | 'submitted' | 'error'>('checking');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [schedule, setSchedule] = useState<ExamSchedule | null>(null);
+  const [teacherName, setTeacherName] = useState('');
+  const [studentName, setStudentName] = useState('Student');
+  const [university, setUniversity] = useState('ChainEdu University');
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [answers, setAnswers] = useState<Record<number, number>>({});
   const [currentQ, setCurrentQ] = useState(0);
-  const [answers, setAnswers] = useState({});
-  const [flagged, setFlagged] = useState(new Set());
-  const [timeLeft, setTimeLeft] = useState(0);
-  
-  const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const [submissionStep, setSubmissionStep] = useState(0);
-  const [finalResult, setFinalResult] = useState(null);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [bufferPath, setBufferPath] = useState('');
 
-  // Buffer sync mechanism using real IPFS MFS
-  const mfsBufferPath = `/chainedu/buffer/${account?.slice(0, 10)}_${examId}.json`;
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoBufferRef = useRef<Uint8Array[]>([]);
+  const videoRefExam = useRef<HTMLVideoElement>(null);
+  const videoRefInstruction = useRef<HTMLVideoElement>(null);
 
-  const syncToBuffer = async (newAnswers) => {
+  const initExam = useCallback(async () => {
     try {
-      await mfsWriteJSON(mfsBufferPath, newAnswers);
-    } catch (e) {
-      console.warn("Buffer sync failed", e);
-    }
-  };
+      if (!address || !examId) return;
+      const access = await mfsReadCSV('/Access/students.csv');
+      let teacher = 'Admin';
+      let sName = 'Student';
+      let uni = 'ChainEdu University';
 
-  const loadExam = useCallback(async () => {
-    if (!account) return;
-    try {
-      setLoading(true);
-      const examManager = await getExamManager();
-      if (!examManager) throw new Error("Contract not ready");
-
-      const eData = await examManager.methods.getExam(examId).call();
-      
-      const teacherAddr = eData.teacher.toLowerCase();
-      const pwd = examPassword(teacherAddr);
-
-      // Decrypt paper
-      const cipherPaper = await ipfsCat(eData.paperCID);
-      const parsedPaper = JSON.parse(await decryptAES(cipherPaper, pwd, teacherAddr));
-      
-      setQuestions(parsedPaper);
-      setExamData({
-        name: eData.name,
-        teacher: teacherAddr,
-        answerCID: eData.answerCID,
-        startTime: Number(eData.startTime),
-        duration: Number(eData.duration)
-      });
-
-      // Recover buffer if exists
-      try {
-        const buffered = await mfsReadJSON(mfsBufferPath);
-        if (buffered) {
-           setAnswers(buffered);
-           toast.success("Recovered buffered answers from IPFS");
+      if (access) {
+        const row = access.rows.find(r => r[2]?.toLowerCase() === address.toLowerCase());
+        if (row) {
+          teacher = row[3];
+          sName = row[1];
+          uni = row[5] || 'ChainEdu University';
         }
-      } catch (e) {
-        // No buffer, that's fine
       }
+      setStudentName(sName);
+      setUniversity(uni);
+      setTeacherName(teacher);
 
-      // Time left calculation
-      const endMs = (Number(eData.startTime) + Number(eData.duration)) * 1000;
-      let left = Math.floor((endMs - Date.now()) / 1000);
-      if(left < 0) left = 0;
-      setTimeLeft(left);
+      const schedules = await getExamSchedules(uni, teacher);
+      const sch = schedules.find(s => s.examName === examId);
+      if (!sch) { setErrorMsg('Exam not found'); setPhase('error'); return; }
+      setSchedule(sch);
 
-      setLoading(false);
-    } catch (err) {
-      toast.error("Error loading exam: " + err.message);
-      setLoading(false);
+      if (!isExamActiveNow(sch)) { setErrorMsg('Exam is not active'); setPhase('error'); return; }
+      
+      const endMs = new Date(sch.endTime).getTime();
+      setTimeLeft(Math.max(0, Math.floor((endMs - Date.now()) / 1000)));
+
+      const qs = await getQuestionPaper(uni, teacher, examId);
+      setQuestions(qs.map(q => ({ ...q, marks: Number(q.marks) || 1 })));
+
+      const bPath = `/Buffer/${uni.replace(/\s+/g,'_')}/${teacher.replace(/\s+/g,'_')}/${sName.replace(/\s+/g,'_')}/Temp.json`;
+      setBufferPath(bPath);
+
+      const localBuf = localStorage.getItem(`chainEdu_buffer_${address}_${examId}`);
+      if (localBuf) setAnswers(JSON.parse(localBuf));
+
+      const hasStarted = localStorage.getItem(`chainEdu_exam_started_${address}_${examId}`) === 'true';
+      if (hasStarted) setPhase('exam');
+      else setPhase('instructions');
+
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Error');
+      setPhase('error');
     }
-  }, [account, examId, getExamManager, mfsBufferPath]);
+  }, [address, examId]);
 
-  useEffect(() => {
-    loadExam();
-  }, [loadExam]);
+  useEffect(() => { initExam(); }, [initExam]);
 
-  useEffect(() => {
-    if (submitted || submitting || timeLeft <= 0 || loading) return;
-    const timer = setInterval(() => setTimeLeft(t => Math.max(0, t - 1)), 1000);
-    return () => clearInterval(timer);
-  }, [submitted, submitting, timeLeft, loading]);
-
-  const selectAnswer = (qIdx, optIdx) => {
-    setAnswers(prev => {
-      const next = { ...prev, [qIdx]: optIdx };
-      syncToBuffer(next);
-      return next;
-    });
-  };
-
-  const toggleFlag = (qIdx) => {
-    setFlagged(prev => { const n = new Set(prev); n.has(qIdx) ? n.delete(qIdx) : n.add(qIdx); return n; });
-  };
-
-  const handleSubmit = async () => {
-    if(!account || !examData) return;
+  const requestPermissions = async () => {
     try {
-      setSubmitting(true);
-      setSubmissionStep(0); // Answers Collected
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      mediaStreamRef.current = stream;
+      if (videoRefInstruction.current) videoRefInstruction.current.srcObject = stream;
+      setPermissionGranted(true);
+      
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp8,opus', videoBitsPerSecond: 50000 });
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = async (e) => {
+        if (e.data.size > 0) {
+          const buffer = new Uint8Array(await e.data.arrayBuffer());
+          const safeUni = university.replace(/\s+/g,'_');
+          const safeTeacher = teacherName.replace(/\s+/g,'_');
+          const safeStudent = studentName.replace(/\s+/g,'_');
+          const recPath = `/Recordings/${safeUni}/${safeTeacher}/${safeStudent}/${safeStudent}.HEVC`;
+          await mfsAppendBinary(recPath, buffer).catch(() => videoBufferRef.current.push(buffer));
+        }
+      };
+    } catch (err) {
+      toast.error("Camera and Microphone are mandatory.");
+    }
+  };
 
-      const pwd = examPassword(examData.teacher);
-      
-      // Step 1: Decrypt answers, calculate score locally
-      setSubmissionStep(1); // Encrypting
-      const cipherAnswers = await ipfsCat(examData.answerCID);
-      const answerKey = JSON.parse(await decryptAES(cipherAnswers, pwd, examData.teacher));
-      
-      let score = 0;
-      const totalQuestions = questions.length;
-      
-      // We map numeric indices (0-3) to 'Option1'-'Option4'
-      const optionMap = ['Option1', 'Option2', 'Option3', 'Option4'];
-      
-      const evaluation = questions.map((q, idx) => {
-          const studentAnsIdx = answers[idx];
-          const studentAnsStr = studentAnsIdx !== undefined ? optionMap[studentAnsIdx] : null;
-          const correctAnsStr = answerKey[idx];
-          if(studentAnsStr === correctAnsStr) score++;
-          
-          return {
-             question: q.question,
-             selected: studentAnsStr || 'None',
-             correct: correctAnsStr,
-             isCorrect: studentAnsStr === correctAnsStr
-          };
-      });
+  const startExam = () => {
+    if (!permissionGranted) { alert('Grant permissions first'); return; }
+    localStorage.setItem(`chainEdu_exam_started_${address}_${examId}`, 'true');
+    setPhase('exam');
+    if (mediaRecorderRef.current) mediaRecorderRef.current.start(10000);
+  };
 
-      const resultPayload = {
-         examId,
-         student: account,
-         score,
-         totalQuestions,
-         evaluation
+  const calculateCurrentScore = (ans: Record<number, number>) => {
+    let score = 0;
+    questions.forEach((q, i) => {
+      if (ans[i] === Number(q.answeroption)) {
+        score += Number(q.marks || 1);
+      } else if (ans[i] !== undefined && q.negative_marks) {
+        score -= Number(q.negative_marks);
+      }
+    });
+    return Math.max(0, score);
+  };
+
+  const syncBuffer = async (ans: Record<number, number>) => {
+    if (bufferPath) await mfsWriteJSON(bufferPath, ans).catch(() => {});
+  };
+
+  const updateAnswer = (qid: number, opt: number) => {
+    const newAns = { ...answers, [qid]: opt };
+    setAnswers(newAns);
+    localStorage.setItem(`chainEdu_buffer_${address}_${examId}`, JSON.stringify(newAns));
+    syncBuffer(newAns);
+  };
+
+  const submitExam = async () => {
+    if (isSubmitting || !address) return;
+    setIsSubmitting(true);
+    if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
+
+    try {
+      const finalScore = calculateCurrentScore(answers);
+      const safeUni = university.replace(/\s+/g,'_');
+      const safeTeacher = teacherName.replace(/\s+/g,'_');
+      const safeExam = (examId as string).replace(/\s+/g,'_');
+      const safeStudent = studentName.replace(/\s+/g,'_');
+      
+      const shortWallet = address.slice(2, 8).toLowerCase();
+      const perfPath = `/Performance/${safeUni}/${safeTeacher}/${safeExam}/${safeStudent}${shortWallet}.enc`;
+      const encPerf = EncryptionUtils.encryptAES(performance); // performance is already an array
+      await mfsWriteJSON(perfPath, { data: encPerf });
+
+      // Result
+      const resultObj: StudentResult = {
+        examId: examId!,
+        studentName,
+        studentWallet: address,
+        score: finalScore,
+        total: questions.length,
+        percentage: (finalScore / (questions.length || 1)) * 100,
+        submittedAt: new Date().toISOString(),
+        university,
       };
 
-      // Encrypt result with STUDENT'S wallet address
-      setSubmissionStep(2); // Uploading
-      const resPwd = resultPassword(account);
-      const encResult = await encryptAES(JSON.stringify(resultPayload), resPwd, account);
-      const resultCID = await ipfsAdd(encResult);
+      const resultJSON = JSON.stringify(resultObj);
+      const cid = await ipfsAdd(EncryptionUtils.encryptAES(resultJSON));
 
-      setSubmissionStep(3); // Hashing
-      const hashStr = await sha256Hex(account + examId + score + encResult);
-      const bytes32Hash = '0x' + hashStr.slice(0, 64);
+      // Blockchain Anchor
+      const contract = ResultLedgerContract();
+      if (contract) {
+        const examHash = toBytes32(examId!);
+        // EncryptionUtils.hashSHA256 already includes '0x'
+        const resHash = EncryptionUtils.hashSHA256(resultJSON);
+        
+        // Convert to integers to prevent contract revert
+        const integerScore = Math.floor(finalScore);
+        const integerTotal = questions.length;
 
-      setSubmissionStep(4); // Blockchain
-      const resultLedger = await getResultLedger();
-      const tx = await resultLedger.methods.submitResult(
-        account,
-        examId,
-        bytes32Hash,
-        resultCID,
-        score,
-        totalQuestions
-      ).send({ from: account });
+        await contract.methods.submitResult(
+          address,
+          examHash,
+          resHash,
+          cid,
+          integerScore,
+          integerTotal
+        ).send({ from: address, gas: 300000 });
+      }
 
-      // Clear buffer
-      try {
-         const client = getIPFSClient();
-         await client.files.rm(mfsBufferPath);
-      } catch(e){}
+      // Teacher CSV Backup (Ensures instructor visibility)
+      const { saveStudentResult } = await import('@/utils/examUtils');
+      await saveStudentResult(examId!, resultObj).catch(() => {});
 
-      setFinalResult({ txHash: tx.transactionHash, cid: resultCID, score, totalQuestions });
-      setSubmitting(false);
-      setSubmitted(true);
-
-    } catch(err) {
-      toast.error('Submission failed: ' + err.message);
-      setSubmitting(false);
+      // Cleanup
+      if (bufferPath) await mfsWriteJSON(bufferPath, {});
+      localStorage.removeItem(`chainEdu_buffer_${address}_${examId}`);
+      localStorage.setItem(`chainEdu_submitted_${address.toLowerCase()}_${examId}`, 'true');
+      setPhase('submitted');
+      toast.success("Exam submitted on-chain!");
+    } catch (err) {
+      toast.error("Submission failed.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  if (loading) {
-    return <div className="p-12 text-center text-cyan-400">Loading Exam Data & Decrypting...</div>;
-  }
+  useEffect(() => {
+    if (phase === 'exam') {
+      const timer = setInterval(() => {
+        setTimeLeft(prev => {
+          if (prev <= 1) { clearInterval(timer); submitExam(); return 0; }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [phase]);
 
-  if (submitted && finalResult) {
-    return (
-      <div className="min-h-[80vh] flex items-center justify-center">
-        <GlassCard className="max-w-lg w-full text-center space-y-6">
-          <div className="text-6xl">🎉</div>
-          <h1 className="text-2xl font-bold">Exam Submitted & Secured On-Chain</h1>
-          
-          <div className="bg-cyan-900/40 border border-cyan-500/50 p-6 rounded-xl space-y-2">
-            <h2 className="text-sm font-bold text-cyan-300 uppercase tracking-wider">Your Score</h2>
-            <div className="text-4xl font-bold text-cyan-100">{finalResult.score} / {finalResult.totalQuestions}</div>
-            <p className="text-xs text-cyan-500 pt-2 text-left">The detailed answer sheet is encrypted securely via AES-256 and only you and your teacher can view it.</p>
+  if (phase === 'checking') return <div className="p-20 text-center animate-pulse">Initializing SECURE-EXAM Environment...</div>;
+  if (phase === 'error') return <div className="p-20 text-center text-rose-600 font-bold">{errorMsg}</div>;
+  if (phase === 'submitted') return (
+    <div className="flex flex-col items-center justify-center h-screen bg-slate-50">
+       <div className="bg-white p-12 border rounded-3xl shadow-xl text-center space-y-6">
+          <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto">
+             <CheckSquare className="text-emerald-600 w-10 h-10" />
           </div>
-
-          <StatusBadge variant="success" pulse>✅ Verified on Blockchain</StatusBadge>
-          
-          <div className="space-y-3 text-left">
-            <div className="flex justify-between items-center p-3 rounded-lg bg-muted/50">
-              <span className="text-sm text-muted-foreground">Tx Hash</span>
-              <TxHashDisplay hash={finalResult.txHash} />
-            </div>
-            <div className="flex justify-between items-center p-3 rounded-lg bg-muted/50">
-              <span className="text-sm text-muted-foreground">IPFS CID</span>
-              <CIDDisplay cid={finalResult.cid} />
-            </div>
-          </div>
-          
-          <Button onClick={() => navigate('/student/dashboard')} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white">
-            Return to Dashboard
-          </Button>
-        </GlassCard>
-      </div>
-    );
-  }
-
-  if (submitting) {
-    const steps = [
-      { label: 'Answers Collected', icon: Check, log: `${Object.keys(answers).length} answers packaged` },
-      { label: 'Auto-Grading & Encrypting', icon: Lock, log: 'AES-256-CBC encryption applied' },
-      { label: 'Uploading to IPFS', icon: Upload, log: 'Network transmission in progress...' },
-      { label: 'Generating Anchors', icon: Shield, log: 'SHA-256 Hash ready' },
-      { label: 'Submitting to Blockchain', icon: LinkIcon, log: 'Awaiting MetaMask Confirmation...' },
-    ];
-    return (
-      <div className="min-h-[80vh] flex items-center justify-center">
-        <GlassCard className="max-w-2xl w-full space-y-6">
-          <h2 className="text-xl font-bold text-center">Submitting Immutable Exam...</h2>
-          <div className="space-y-4">
-            {steps.map((step, i) => {
-              const done = submissionStep > i;
-              const active = submissionStep === i;
-              return (
-                <div key={i} className={`flex items-start gap-4 p-3 rounded-lg transition-all ${done ? 'bg-success/10 border border-success/30' : active ? 'bg-cyan-500/10 border border-cyan-500/50' : 'bg-muted/30 border border-transparent'}`}>
-                  <div className={`p-2 rounded-lg ${done ? 'bg-success/20 text-success' : active ? 'bg-cyan-500/20 text-cyan-400 animate-pulse' : 'bg-muted text-muted-foreground'}`}>
-                    <step.icon className="h-4 w-4" />
-                  </div>
-                  <div className="flex-1">
-                    <p className={`font-medium text-sm ${done ? 'text-success' : active ? 'text-cyan-400' : 'text-muted-foreground'}`}>
-                      {done ? '✅' : active ? '⏳' : '⬜'} {step.label}
-                    </p>
-                    {(done || active) && (
-                      <p className="font-mono text-xs text-muted-foreground mt-1 bg-background/50 rounded px-2 py-1">
-                        {step.log}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <Progress value={(submissionStep / 4) * 100} className="h-2 bg-gray-800" />
-        </GlassCard>
-      </div>
-    );
-  }
-
-  const q = questions[currentQ];
-  const allAnswered = questions.every((_, i) => answers[i] !== undefined);
-  const mins = Math.floor(timeLeft / 60);
-  const secs = timeLeft % 60;
-  const isLowTime = timeLeft < 300;
+          <h2 className="text-3xl font-black uppercase italic tracking-tighter">Session Anchored</h2>
+          <p className="text-slate-500 max-w-sm mx-auto">Your responses and proctoring logs have been moved to the decentralized ledger. mapping. mapping. mapping. mapping.</p>
+          <Button onClick={() => navigate('/student')} className="w-full bg-slate-900 text-white font-bold h-12 rounded-xl">Back to Portal</Button>
+       </div>
+    </div>
+  );
 
   return (
-    <div className="space-y-4 max-w-6xl">
-      {/* Top bar */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-lg font-bold">{examData?.name}</h1>
-          <p className="text-xs text-muted-foreground text-cyan-400">Buffered in real-time to IPFS MFS</p>
+    <div className="min-h-screen bg-slate-50 p-6">
+      {phase === 'instructions' ? (
+        <div className="max-w-3xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4">
+           <div className="bg-white border p-8 rounded-3xl shadow-sm space-y-6">
+              <h1 className="text-3xl font-black uppercase italic tracking-tighter flex items-center gap-3">
+                <Shield className="text-blue-600" /> Proctoring Setup
+              </h1>
+              <div className="space-y-4 text-slate-600 leading-relaxed font-medium">
+                <p>1. Ensure your camera and microphone are ON throughout the session.</p>
+                <p>2. Live recording is active and chuncked to IPFS MFS for integrity.</p>
+                <p>3. Do not refresh or exit the fullscreen mode once the exam starts.</p>
+              </div>
+
+              <div className="aspect-video bg-slate-900 rounded-2xl overflow-hidden border-4 border-slate-100 relative group">
+                <video ref={videoRefInstruction} autoPlay muted playsInline className="w-full h-full object-cover" />
+                {!permissionGranted && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
+                    <Button onClick={requestPermissions} className="bg-white text-slate-900 font-bold px-8 h-12 rounded-xl hover:scale-105 transition-transform">Enable Camera & Mic</Button>
+                  </div>
+                )}
+              </div>
+
+              <Button onClick={startExam} disabled={!permissionGranted} className="w-full bg-blue-600 text-white font-bold h-14 rounded-2xl text-lg shadow-lg shadow-blue-200 hover:bg-blue-700">
+                Acknowledge and Start
+              </Button>
+           </div>
         </div>
+      ) : (
+        <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
+           <div className="lg:col-span-2 space-y-6">
+              <div className="bg-white border p-8 rounded-3xl shadow-sm min-h-[400px] flex flex-col">
+                 <div className="flex justify-between items-center mb-10">
+                    <span className="text-[10px] font-black uppercase bg-slate-100 px-3 py-1 rounded-full text-slate-500">Question {currentQ + 1} of {questions.length}</span>
+                    <div className="flex items-center gap-2 text-rose-600 font-black tracking-tighter">
+                       <Clock size={16} /> 
+                       {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+                    </div>
+                 </div>
+                 
+                 <h2 className="text-xl font-bold text-slate-900 mb-8 leading-tight">{questions[currentQ].question}</h2>
+                 
+                 <div className="space-y-3 flex-1">
+                    {[
+                      questions[currentQ].option1,
+                      questions[currentQ].option2,
+                      questions[currentQ].option3,
+                      questions[currentQ].option4
+                    ].map((opt, i) => (
+                       <button
+                         key={i}
+                         onClick={() => updateAnswer(currentQ, i + 1)}
+                         className={`w-full p-4 rounded-xl border text-left font-bold transition-all ${answers[currentQ] === (i + 1) ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-slate-50 border-slate-100 text-slate-600 hover:border-blue-200'}`}
+                       >
+                         {String.fromCharCode(65 + i)}. {opt}
+                       </button>
+                    ))}
+                 </div>
 
-        <div className={`flex items-center gap-2 px-4 py-2 rounded-xl glass-card border ${isLowTime ? 'border-red-500/50 text-red-400 animate-pulse' : 'border-gray-800 text-white'}`}>
-          <span className="text-2xl font-bold font-mono">
-            {String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}
-          </span>
+                 <div className="flex justify-between pt-8 border-t mt-8">
+                    <Button variant="ghost" onClick={() => setCurrentQ(Math.max(0, currentQ - 1))} className="gap-2 font-bold"><ChevronLeft size={18}/> Back</Button>
+                    {currentQ === questions.length - 1 ? (
+                      <Button onClick={submitExam} disabled={isSubmitting} className="bg-emerald-600 text-white font-bold px-8 h-12 rounded-xl">FINISH & ANCHOR</Button>
+                    ) : (
+                      <Button onClick={() => setCurrentQ(currentQ + 1)} className="bg-slate-900 text-white font-bold px-8 h-12 rounded-xl gap-2">Next <ChevronRight size={18}/></Button>
+                    )}
+                 </div>
+              </div>
+           </div>
+
+           <div className="space-y-6">
+              <div className="bg-slate-900 rounded-3xl overflow-hidden border-4 border-white shadow-xl aspect-video relative">
+                 <video ref={videoRefExam} autoPlay muted playsInline className="w-full h-full object-cover grayscale contrast-125" />
+                 <div className="absolute top-4 left-4 flex items-center gap-2">
+                    <div className="w-2 h-2 bg-rose-600 rounded-full animate-pulse" />
+                    <span className="text-[10px] font-bold text-white uppercase tracking-widest">Live Proctoring</span>
+                 </div>
+              </div>
+              
+              <div className="bg-white border p-6 rounded-3xl shadow-sm">
+                 <h3 className="text-xs font-black uppercase text-slate-400 mb-4 tracking-widest">Jump to Question</h3>
+                 <div className="grid grid-cols-5 gap-2">
+                    {questions.map((_, i) => (
+                       <button
+                         key={i}
+                         onClick={() => setCurrentQ(i)}
+                         className={`aspect-square rounded-lg flex items-center justify-center text-xs font-bold ${currentQ === i ? 'bg-blue-600 text-white' : answers[i] !== undefined ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}
+                       >
+                         {i + 1}
+                       </button>
+                    ))}
+                 </div>
+              </div>
+           </div>
         </div>
-
-        <Button onClick={handleSubmit} disabled={!allAnswered}
-          className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold disabled:opacity-50 transition-colors">
-          Submit Exam
-        </Button>
-      </div>
-
-      {/* Progress */}
-      <div className="flex items-center gap-3">
-        <span className="text-sm text-gray-400">Question {currentQ + 1} of {questions.length}</span>
-        <Progress value={((currentQ + 1) / questions.length) * 100} className="h-1.5 flex-1 bg-gray-800" />
-      </div>
-
-      <div className="grid lg:grid-cols-[1fr_200px] gap-4">
-        {/* Question */}
-        <GlassCard className="space-y-6">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-500 font-bold uppercase tracking-wider">
-              Question {currentQ + 1}
-            </span>
-            <Button variant="ghost" size="sm" onClick={() => toggleFlag(currentQ)}
-              className={flagged.has(currentQ) ? 'text-amber-500 hover:text-amber-400' : 'text-gray-500 hover:text-white'}>
-              <Flag className="h-4 w-4 mr-1" /> {flagged.has(currentQ) ? 'Flagged' : 'Flag'}
-            </Button>
-          </div>
-
-          <p className="text-lg font-medium leading-relaxed text-white">{q?.question}</p>
-
-          <div className="grid gap-3">
-             {/* Map standard fields back to array */}
-            {[q?.option1, q?.option2, q?.option3, q?.option4].map((opt, i) => (
-              <button key={i} onClick={() => selectAnswer(currentQ, i)}
-                className={`text-left p-4 rounded-xl border transition-all ${
-                  answers[currentQ] === i
-                    ? 'border-cyan-500 bg-cyan-900/30 text-white shadow-[0_0_15px_rgba(0,212,255,0.2)]'
-                    : 'border-gray-800 hover:border-gray-600 hover:bg-white/5 text-gray-300'
-                }`}>
-                <span className="font-mono text-xs mr-3 text-cyan-600 font-bold bg-cyan-900/40 px-2 py-1 rounded">{String.fromCharCode(65 + i)}</span>
-                {opt}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex justify-between pt-2">
-             <Button variant="outline" className="border-gray-700 hover:bg-gray-800 text-gray-300" disabled={currentQ === 0} onClick={() => setCurrentQ(c => c - 1)}>
-               <ChevronLeft className="h-4 w-4 mr-1" /> Previous
-             </Button>
-             <Button variant="outline" className="border-gray-700 hover:bg-gray-800 text-gray-300" disabled={currentQ === questions.length - 1} onClick={() => setCurrentQ(c => c + 1)}>
-               Next <ChevronRight className="h-4 w-4 ml-1" />
-             </Button>
-          </div>
-        </GlassCard>
-
-        {/* Question navigator */}
-        <GlassCard className="space-y-3 h-fit border-gray-800 bg-[#0d1526]/80">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Navigator</h3>
-          <div className="grid grid-cols-5 gap-2">
-            {questions.map((_, i) => (
-              <button key={i} onClick={() => setCurrentQ(i)}
-                className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
-                  currentQ === i ? 'border-2 border-cyan-400 bg-cyan-900/50 text-cyan-300' :
-                  answers[i] !== undefined ? 'bg-cyan-700/60 text-white shadow-[0_0_10px_rgba(0,212,255,0.3)]' :
-                  flagged.has(i) ? 'bg-amber-600/60 text-amber-100 shadow-[0_0_10px_rgba(245,158,11,0.2)]' :
-                  'bg-gray-800/80 text-gray-500 hover:bg-gray-700'
-                }`}>
-                {i + 1}
-              </button>
-            ))}
-          </div>
-          <div className="text-xs space-y-2 text-gray-500 pt-4 border-t border-gray-800 mt-4">
-            <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-cyan-700/60 shadow-[0_0_5px_rgba(0,212,255,0.5)]" /> Answered</div>
-            <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-amber-600/60 shadow-[0_0_5px_rgba(245,158,11,0.5)]" /> Flagged</div>
-            <div className="flex items-center gap-2"><span className="w-3 h-3 rounded border border-gray-700 bg-gray-900" /> Unanswered</div>
-          </div>
-        </GlassCard>
-      </div>
+      )}
     </div>
   );
 }

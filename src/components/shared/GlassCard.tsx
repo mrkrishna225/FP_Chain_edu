@@ -13,7 +13,8 @@ export function GlassCard({ children, className, hover = false, onClick }: Glass
     <div
       onClick={onClick}
       className={cn(
-        hover ? 'glass-card-hover cursor-pointer' : 'glass-card',
+        'bg-white border border-[#E4E7EC] rounded-lg shadow-[0_1px_3px_rgba(0,0,0,0.06)]',
+        hover && 'cursor-pointer transition-colors hover:border-[#D1D5DB]',
         'p-6',
         className
       )}

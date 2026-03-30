@@ -1,31 +1,18 @@
-/**
- * src/pages/Register.tsx
- *
- * Public page — accessible at /register/:linkId
- *
- * Flow:
- *  1. Validate linkId from IPFS
- *  2. Show role info + MetaMask connect button
- *  3. User fills name, email, institution
- *  4. Submit → stored in IPFS as pending profile
- *  5. Show success + "awaiting approval" message
- */
-
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  validateRegistrationLink,
-  registerUser,
+  getAllLinks,
+  registerTeacher,
+  registerStudent,
   type RegistrationLink,
 } from '@/utils/registrationLinks';
 import { useWallet } from '@/context/WalletContext';
-// ─── Component ───────────────────────────────────────────────
+import { mfsExists, MFS } from '@/utils/mfs';
 
 type PageState =
   | 'loading'
   | 'invalid-link'
   | 'connect-wallet'
-  | 'already-registered'
   | 'fill-form'
   | 'submitting'
   | 'success'
@@ -34,20 +21,28 @@ type PageState =
 export default function Register() {
   const { linkId } = useParams<{ linkId: string }>();
   const navigate = useNavigate();
-  const { connectWallet, address, isConnected, isConnecting } = useWallet();
-
-  const getEthereum = () => typeof window !== 'undefined' ? (window as any).ethereum : null;
+  const { connectWallet, address, isConnected } = useWallet();
 
   const [pageState, setPageState] = useState<PageState>('loading');
   const [link, setLink] = useState<RegistrationLink | null>(null);
   const [invalidReason, setInvalidReason] = useState('');
 
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [institution, setInstitution] = useState('');
+  const [walletInput, setWalletInput] = useState('');
   const [submitError, setSubmitError] = useState('');
+  const [resolvedTeacherName, setResolvedTeacherName] = useState<string | null>(null);
+  const [registeredWallet, setRegisteredWallet] = useState<string>('');
 
-  // ─── Step 1: Validate link ──────────────────────────────────
+  // SEC-TC-010: Sanitization helper (strips HTML and blocks CSV injection formulas)
+  const sanitize = (str: string) => {
+    let clean = str.replace(/[<>]/g, '').trim();
+    // Block spreadsheet formula injection
+    if (clean.startsWith('=') || clean.startsWith('+') || clean.startsWith('-') || clean.startsWith('@')) {
+      clean = "'" + clean; // Escape with apostrophe
+    }
+    return clean;
+  };
+
   useEffect(() => {
     if (!linkId) {
       setInvalidReason('No registration link provided.');
@@ -55,272 +50,323 @@ export default function Register() {
       return;
     }
 
-    validateRegistrationLink(linkId).then(({ valid, link: l, reason }) => {
-      if (!valid || !l) {
-        setInvalidReason(reason ?? 'Invalid registration link.');
+    const validate = async () => {
+      const allLinks = await getAllLinks();
+      const found = allLinks.find(l => l.linkId === linkId);
+      
+      if (!found) {
+        setInvalidReason('Invalid or expired registration link.');
         setPageState('invalid-link');
         return;
       }
-      setLink(l);
+
+      if (found.status === 'stopped') {
+        setInvalidReason('This registration link has been temporarily disabled by the administrator.');
+        setPageState('invalid-link');
+        return;
+      }
+      
+      setLink(found);
+
+      // Resolve teacher name for students
+      if (found.role === 'Student') {
+        const { getTeacherNameByWallet } = await import('@/utils/examUtils');
+        const tName = await getTeacherNameByWallet(found.createdBy);
+        if (tName) setResolvedTeacherName(tName);
+      }
+      
       if (isConnected && address) {
         setPageState('fill-form');
+        setWalletInput(address);
       } else {
         setPageState('connect-wallet');
       }
-    }).catch(() => {
+    };
+
+    validate().catch(() => {
       setInvalidReason('Could not validate link.');
       setPageState('invalid-link');
     });
   }, [linkId, isConnected, address]);
 
-  // ─── Step 2: Connect MetaMask ───────────────────────────────
   const handleConnectWallet = async () => {
     await connectWallet();
   };
 
-  useEffect(() => {
-    if (isConnected && address && pageState === 'connect-wallet') {
-       setPageState('fill-form');
-    }
-  }, [isConnected, address, pageState]);
-
-  // ─── Step 3: Submit registration ───────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!linkId || !address || !link) return;
 
-    if (!name.trim() || !email.trim() || !institution.trim()) {
-      setSubmitError('All fields are required.');
+    const cleanName = sanitize(name);
+    const cleanWallet = sanitize(walletInput);
+
+    if (!cleanName) {
+      setSubmitError('Name is required.');
+      return;
+    }
+    
+    if (!/^0x[a-fA-F0-9]{40}$/.test(cleanWallet)) {
+      setSubmitError('Invalid Ethereum wallet address format. (0x followed by 40 hex chars)');
       return;
     }
 
     setPageState('submitting');
     setSubmitError('');
 
-    const result = await registerUser(linkId, address, name, email, institution);
+    try {
+      // SEC-TC-048: Anti-Double-Registration pre-check
+      const { isStudentApproved, isTeacherApproved } = await import('@/utils/examUtils');
+      const alreadyStudent = await isStudentApproved(cleanWallet);
+      const alreadyTeacher = await isTeacherApproved(cleanWallet);
+      
+      if (alreadyStudent || alreadyTeacher) {
+        throw new Error('This wallet address is already registered in the ChainEdu system.');
+      }
+      
+      if (link.role === 'Teacher') {
+        await registerTeacher({
+          name: cleanName,
+          role: 'Teacher', 
+          university: link.university,
+          department: link.department,
+          walletAddress: cleanWallet.toLowerCase(),
+          linkId: link.linkId
+        });
+      } else {
+        const { getTeacherNameByWallet } = await import('@/utils/examUtils');
+        const teacherName = await getTeacherNameByWallet(link.createdBy) || link.university;
+        
+        await registerStudent({
+          name: cleanName,
+          walletAddress: cleanWallet.toLowerCase(),
+          teacherName: teacherName,
+          linkId: link.linkId,
+          teacherId: link.createdBy.toLowerCase(),
+          university: link.university,
+          department: link.department
+        });
+      }
 
-    if (result.success) {
+      setRegisteredWallet(cleanWallet);
       setPageState('success');
-    } else {
-      setSubmitError(result.error ?? 'Registration failed. Please try again.');
+    } catch (err: any) {
+      setSubmitError(err.message || 'Registration failed. Please try again.');
       setPageState('fill-form');
     }
   };
 
-  // ─── Role badge colours ─────────────────────────────────────
-  const roleColour = link?.role === 'teacher'
-    ? 'from-purple-500 to-violet-600'
-    : 'from-emerald-500 to-teal-600';
+  const roleLabels: Record<string, string> = {
+    'Teacher': 'Teacher',
+    'Student': 'Student'
+  };
 
-  const roleLabel = link?.role === 'teacher' ? '👩‍🏫 Teacher' : '🎓 Student';
-
-  // ─── Render ─────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-[#060b18] flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Animated background orbs */}
-      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl animate-pulse" />
-      <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-violet-500/10 rounded-full blur-3xl animate-pulse delay-1000" />
-
-      <div className="relative z-10 w-full max-w-md">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 text-cyan-400 font-mono text-sm mb-4 px-4 py-2 rounded-full border border-cyan-500/30 bg-cyan-500/10">
-            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-            ChainEdu — Decentralized LMS
+    <div style={{
+      minHeight: '100vh', background: '#F7F8FA', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', padding: 24,
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    }}>
+      <div style={{ width: '100%', maxWidth: 480 }}>
+        {/* Page header */}
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 20, fontWeight: 700, color: '#111827' }}>ChainEdu</span>
           </div>
-          <h1 className="text-3xl font-bold text-white mb-2">
-            {pageState === 'success' ? '🎉 Registration Submitted!' : 'Create Your Account'}
-          </h1>
+          <p style={{ fontSize: 13, color: '#9CA3AF', margin: 0 }}>Registration Portal</p>
         </div>
 
-        {/* Card */}
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
+        {/* Main card */}
+        <div style={{
+          background: '#FFFFFF', border: '1px solid #E4E7EC', borderRadius: 8,
+          padding: 32, boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+        }}>
 
-          {/* ── Loading ─────────────────────────────────────── */}
+          {/* LOADING */}
           {pageState === 'loading' && (
-            <div className="flex flex-col items-center gap-4 py-8">
-              <div className="w-10 h-10 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-              <p className="text-gray-400 text-sm">Validating registration link...</p>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '32px 0', textAlign: 'center' }}>
+              <div style={{ width: 24, height: 24, border: '2px solid #2563EB', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+              <p style={{ fontSize: 14, color: '#6B7280', margin: 0 }}>Validating registration link...</p>
             </div>
           )}
 
-          {/* ── Invalid link ─────────────────────────────────── */}
+          {/* INVALID LINK */}
           {pageState === 'invalid-link' && (
-            <div className="text-center py-6">
-              <div className="text-5xl mb-4">🔗</div>
-              <h2 className="text-xl font-bold text-red-400 mb-3">Invalid Link</h2>
-              <p className="text-gray-400 text-sm leading-relaxed mb-6">{invalidReason}</p>
-              <button
-                onClick={() => navigate('/')}
-                className="px-6 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition-colors border border-white/20"
-              >
-                ← Back to Home
+            <div>
+              <h2 style={{ fontSize: 20, fontWeight: 600, color: '#111827', margin: '0 0 8px' }}>Complete Registration</h2>
+              <p style={{ fontSize: 14, color: '#6B7280', margin: '0 0 20px' }}>Registration link verification failed.</p>
+
+              <div style={{ padding: '12px 16px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 20 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" style={{ flexShrink: 0, marginTop: 1 }}>
+                  <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <p style={{ fontSize: 13, color: '#7F1D1D', margin: 0 }}>{invalidReason}</p>
+              </div>
+
+              <button onClick={() => navigate('/')} style={{
+                width: '100%', padding: '8px 16px', background: '#FFFFFF', border: '1px solid #E4E7EC',
+                borderRadius: 6, fontSize: 14, fontWeight: 500, color: '#374151', cursor: 'pointer',
+              }}>
+                Return Home
               </button>
             </div>
           )}
 
-          {/* ── Connect Wallet ─────────────────────────────────── */}
+          {/* CONNECT WALLET */}
           {pageState === 'connect-wallet' && link && (
-            <div className="space-y-6">
-              <div className={`flex items-center gap-3 p-4 rounded-xl bg-gradient-to-r ${roleColour} bg-opacity-20 border border-white/20`}>
-                <span className="text-2xl">{link.role === 'teacher' ? '👩‍🏫' : '🎓'}</span>
-                <div>
-                  <p className="font-bold text-white">{roleLabel} Registration</p>
-                  <p className="text-xs text-white/70">
-                    Link expires: {new Date(link.expiresAt).toLocaleDateString()}
-                  </p>
-                </div>
-              </div>
-
-              <div className="text-sm text-gray-400 leading-relaxed">
-                Connect your MetaMask wallet to continue. Your wallet address will be your permanent identity on ChainEdu.
-              </div>
-
-              {!getEthereum() && (
-                <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
-                  <p className="text-yellow-400 text-xs">
-                    ⚠ MetaMask not detected.{' '}
-                    <a
-                      href="https://metamask.io/download/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="underline"
-                    >
-                      Install MetaMask
-                    </a>{' '}
-                    and refresh this page.
-                  </p>
-                </div>
-              )}
-
-              <button
-                onClick={handleConnectWallet}
-                className="w-full py-4 rounded-xl font-bold text-white text-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 transition-all duration-200 shadow-lg shadow-cyan-500/20 hover:scale-[1.02]"
-              >
-                🦊 Connect with MetaMask
-              </button>
-            </div>
-          )}
-
-          {/* ── Fill Form ─────────────────────────────────────── */}
-          {pageState === 'fill-form' && link && (
-            <form onSubmit={handleSubmit} className="space-y-5">
-              {/* Wallet display */}
-              <div className="p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center gap-3">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                <code className="text-cyan-300 text-xs flex-1 break-all">{address}</code>
-              </div>
-
-              <div className={`text-xs font-semibold px-3 py-1 rounded-full inline-block bg-gradient-to-r ${roleColour} text-white`}>
-                {roleLabel}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">Full Name *</label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Your full name"
-                  required
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">Email Address *</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="your@email.com"
-                  required
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">Institution / Organization *</label>
-                <input
-                  type="text"
-                  value={institution}
-                  onChange={(e) => setInstitution(e.target.value)}
-                  placeholder="University / School / Company"
-                  required
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
-                />
-              </div>
-
-              {submitError && (
-                <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30">
-                  <p className="text-red-400 text-sm">{submitError}</p>
-                </div>
-              )}
-
-              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
-                ℹ Your registration will be reviewed by an admin before you can access the platform. You'll be notified when approved.
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 transition-all duration-200 shadow-lg shadow-cyan-500/20 hover:scale-[1.02]"
-              >
-                Submit Registration →
-              </button>
-            </form>
-          )}
-
-          {/* ── Submitting ─────────────────────────────────────── */}
-          {pageState === 'submitting' && (
-            <div className="flex flex-col items-center gap-4 py-8">
-              <div className="w-10 h-10 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-              <p className="text-gray-300 font-medium">Storing your profile in IPFS...</p>
-              <p className="text-gray-500 text-xs">This may take a moment</p>
-            </div>
-          )}
-
-          {/* ── Success ─────────────────────────────────────────── */}
-          {pageState === 'success' && (
-            <div className="text-center space-y-5 py-4">
-              <div className="text-6xl mb-2">✅</div>
-              <div>
-                <h2 className="text-xl font-bold text-white mb-2">You're registered!</h2>
-                <p className="text-gray-400 text-sm">
-                  Your profile has been stored securely in IPFS. An admin will review and approve your account.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-left space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Role</span>
-                  <span className="text-white font-medium capitalize">{link?.role}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Wallet</span>
-                  <code className="text-cyan-300 text-xs">{address?.slice(0, 6)}...{address?.slice(-4)}</code>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Status</span>
-                  <span className="text-amber-400 font-medium">⏳ Pending Approval</span>
-                </div>
-              </div>
-
-              <p className="text-gray-500 text-xs">
-                Once approved, you can login at{' '}
-                <button onClick={() => navigate('/')} className="text-cyan-400 hover:underline">
-                  the main site
-                </button>
-                {' '}using your wallet address.
+            <div>
+              <h2 style={{ fontSize: 20, fontWeight: 600, color: '#111827', margin: '0 0 4px' }}>Complete Registration</h2>
+              <p style={{ fontSize: 14, color: '#6B7280', margin: '0 0 20px' }}>
+                You are registering as{' '}
+                <span style={{
+                  padding: '1px 6px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+                  background: link.role === 'Teacher' ? '#DBEAFE' : '#DCFCE7',
+                  color: link.role === 'Teacher' ? '#1D4ED8' : '#15803D',
+                }}>{link.role}</span>
               </p>
+
+              <div style={{ padding: '12px 16px', background: '#F7F8FA', border: '1px solid #E4E7EC', borderRadius: 6, marginBottom: 20 }}>
+                <p style={{ fontSize: 13, fontWeight: 500, color: '#111827', margin: '0 0 4px' }}>{link.university}</p>
+                <p style={{ fontSize: 12, color: '#6B7280', margin: 0 }}>{link.department}</p>
+              </div>
+
+              <p style={{ fontSize: 13, color: '#6B7280', marginBottom: 16 }}>
+                Connect your MetaMask wallet to verify your identity and complete registration.
+              </p>
+
+              <button onClick={handleConnectWallet} style={{
+                width: '100%', padding: '8px 16px', background: '#2563EB', color: '#FFFFFF',
+                border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 500, cursor: 'pointer',
+                transition: 'background 150ms ease',
+              }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#1D4ED8')}
+                onMouseLeave={e => (e.currentTarget.style.background = '#2563EB')}
+              >
+                Connect Wallet
+              </button>
+            </div>
+          )}
+
+          {/* FILL FORM */}
+          {pageState === 'fill-form' && link && (
+            <div>
+              <h2 style={{ fontSize: 20, fontWeight: 600, color: '#111827', margin: '0 0 4px' }}>Complete Registration</h2>
+              <p style={{ fontSize: 14, color: '#6B7280', margin: '0 0 20px' }}>
+                You are registering as{' '}
+                <span style={{
+                  padding: '1px 6px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+                  background: link.role === 'Teacher' ? '#DBEAFE' : '#DCFCE7',
+                  color: link.role === 'Teacher' ? '#1D4ED8' : '#15803D',
+                }}>{link.role}</span>
+              </p>
+
+              <form onSubmit={handleSubmit}>
+                <div style={{ marginBottom: 20 }}>
+                  <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}>Full Name</label>
+                  <input
+                    type="text" value={name} onChange={e => setName(e.target.value)}
+                    placeholder="Enter your legal name" required autoComplete="off"
+                    style={{ width: '100%', padding: '8px 12px', background: '#FFFFFF', border: '1px solid #E4E7EC', borderRadius: 6, fontSize: 14, color: '#111827', outline: 'none', transition: 'border-color 150ms ease', boxSizing: 'border-box' }}
+                    onFocus={e => { e.currentTarget.style.borderColor = '#2563EB'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.10)'; }}
+                    onBlur={e => { e.currentTarget.style.borderColor = '#E4E7EC'; e.currentTarget.style.boxShadow = 'none'; }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: 20 }}>
+                  <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}>Wallet Address</label>
+                  <input
+                    type="text" value={walletInput} onChange={e => setWalletInput(e.target.value)}
+                    placeholder="0x..." required
+                    style={{ width: '100%', padding: '8px 12px', background: '#F7F8FA', border: '1px solid #E4E7EC', borderRadius: 6, fontSize: 13, color: '#374151', fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }}
+                  />
+                  <p style={{ fontSize: 12, color: '#9CA3AF', marginTop: 4, marginBottom: 0 }}>Enter the address you will use for credentials</p>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}>Role</label>
+                    <div style={{ padding: '8px 12px', background: '#F7F8FA', border: '1px solid #E4E7EC', borderRadius: 6 }}>
+                      <span style={{
+                        fontSize: 12, fontWeight: 500,
+                        background: link.role === 'Teacher' ? '#DBEAFE' : '#DCFCE7',
+                        color: link.role === 'Teacher' ? '#1D4ED8' : '#15803D',
+                        padding: '1px 6px', borderRadius: 4,
+                      }}>{link.role}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}>Institution</label>
+                    <div style={{ padding: '8px 12px', background: '#F7F8FA', border: '1px solid #E4E7EC', borderRadius: 6, fontSize: 13, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {link.university}
+                    </div>
+                  </div>
+                </div>
+
+                {submitError && (
+                  <div style={{ padding: '8px 12px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 6, marginBottom: 16 }}>
+                    <p style={{ fontSize: 12, color: '#7F1D1D', margin: 0 }}>{submitError}</p>
+                  </div>
+                )}
+
+                <button type="submit" style={{
+                  width: '100%', padding: '8px 16px', background: '#2563EB', color: '#FFFFFF',
+                  border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 500, cursor: 'pointer',
+                }}>
+                  Submit Application
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* SUBMITTING */}
+          {pageState === 'submitting' && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '32px 0', textAlign: 'center' }}>
+              <div style={{ width: 24, height: 24, border: '2px solid #2563EB', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 500, color: '#111827', margin: '0 0 4px' }}>Submitting registration...</p>
+                <p style={{ fontSize: 12, color: '#9CA3AF', margin: 0 }}>Writing to IPFS</p>
+              </div>
+            </div>
+          )}
+
+          {/* SUCCESS */}
+          {pageState === 'success' && (
+            <div style={{ textAlign: 'center' }}>
+              {/* Checkmark icon */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+                <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#DCFCE7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </div>
+              </div>
+
+              <h2 style={{ fontSize: 16, fontWeight: 600, color: '#111827', margin: '0 0 8px' }}>Registration submitted</h2>
+              <p style={{ fontSize: 14, color: '#6B7280', margin: '0 0 24px' }}>
+                {resolvedTeacherName ? `Awaiting teacher approval (${resolvedTeacherName})` : 'Awaiting admin approval'}
+              </p>
+
+              <div style={{ background: '#F7F8FA', border: '1px solid #E4E7EC', borderRadius: 6, padding: 16, textAlign: 'left' }}>
+                {[
+                  ['Institution', link?.university],
+                  ['Department', link?.department],
+                  resolvedTeacherName ? ['Instructor', resolvedTeacherName] : null,
+                  ['Role', link?.role],
+                  ['Wallet', registeredWallet || address],
+                ].filter(Boolean).map(([label, value]: any) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 8, marginBottom: 8, borderBottom: '1px solid #E4E7EC' }}>
+                    <span style={{ fontSize: 12, color: '#6B7280' }}>{label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 500, color: '#111827', fontFamily: label === 'Wallet' ? 'monospace' : undefined }}>{value}</span>
+                  </div>
+                ))}
+                <p style={{ fontSize: 12, color: '#9CA3AF', margin: 0 }}>You will gain access once your wallet address is approved.</p>
+              </div>
             </div>
           )}
         </div>
-
-        {/* Footer */}
-        <p className="text-center text-gray-600 text-xs mt-6">
-          🔒 Data stored on IPFS · Role secured on blockchain · Powered by ChainEdu
-        </p>
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
+

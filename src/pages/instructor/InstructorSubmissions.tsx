@@ -8,11 +8,76 @@ import { Progress } from '@/components/ui/progress';
 import { mockExams, mockSubmissions } from '@/utils/mockData';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
+import { useWallet } from '@/context/WalletContext';
+import { useWeb3 } from '@/hooks/useWeb3';
+import { useContract } from '@/hooks/useContract';
+import { getExamResults, type StudentResult } from '@/utils/examUtils';
+import { toBytes32 } from '@/utils/contractUtils';
+import { useEffect } from 'react';
+import { toast } from 'sonner';
+
 export default function InstructorSubmissions() {
   const { examId } = useParams();
-  const exam = mockExams.find(e => e.id === examId) || mockExams[1];
-  const subs = mockSubmissions.filter(s => s.examId === exam.id || true).slice(0, 10);
+  const { address } = useWallet();
+  const { web3 } = useWeb3();
+  const { getExamManager } = useContract(web3);
+
+  const [exam, setExam] = useState<any>(null);
+  const [subs, setSubs] = useState<StudentResult[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [selectedSub, setSelectedSub] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function init() {
+      if (!examId || !address) return;
+      try {
+        setIsLoading(true);
+        const manager = await getExamManager();
+        if (!manager) return;
+
+        // SEC-TC-043: Verify Exam Ownership
+        const examData = await manager.methods.getExam(toBytes32(examId)).call();
+        if (examData.teacher.toLowerCase() !== address.toLowerCase()) {
+          setError("ACCESS DENIED: You are not the owner of this exam.");
+          return;
+        }
+
+        setExam(examData);
+        const results = await getExamResults(examId);
+        setSubs(results);
+      } catch (err: any) {
+        setError(err.message || "Failed to load submissions");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    init();
+
+    // SEC-TC-067: RBAC Heartbeat (Check for revocation mid-session)
+    const heartbeat = setInterval(async () => {
+      const { getRoleManager } = await import('@/utils/contractUtils');
+      const roleManager = await getRoleManager();
+      if (roleManager && address) {
+        const isAuthorized = await roleManager.methods.isTeacher(address).call();
+        if (!isAuthorized) {
+          setError("SESSION REVOKED: You no longer have instructor privileges for this institution.");
+        }
+      }
+    }, 60000); // 1-minute check
+
+    return () => clearInterval(heartbeat);
+  }, [examId, address]);
+
+  if (error) return (
+    <div className="p-12 text-center bg-destructive/10 border border-destructive/20 rounded-2xl">
+      <h2 className="text-destructive font-black text-xl mb-2 italic">SECURITY EXCEPTION</h2>
+      <p className="text-muted-foreground">{error}</p>
+    </div>
+  );
+
+  if (isLoading) return <div className="p-8 text-center animate-pulse">Loading Secured Submissions...</div>;
+  if (!exam) return null;
 
   const gradeData = [
     { range: '90-100', count: 3 }, { range: '80-89', count: 5 },

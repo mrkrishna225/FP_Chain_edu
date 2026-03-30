@@ -1,265 +1,334 @@
-/**
- * src/utils/registrationLinks.ts
- *
- * Handles generation, storage, validation, and consumption of
- * admin-generated registration links stored in IPFS MFS.
- *
- * Directory: /chainedu/registry/links/{linkId}.json
- *   {
- *     linkId: string,
- *     role: 'teacher' | 'student',
- *     createdBy: string,   // admin wallet address
- *     createdAt: number,   // unix ms
- *     expiresAt: number,   // unix ms (createdAt + 7 days)
- *     usedBy: string | null, // wallet addr of registrant
- *     usedAt: number | null,
- *     status: 'active' | 'used' | 'expired' | 'revoked'
- *   }
- *
- * User profile: /chainedu/registry/users/{role}s/{walletAddr}.json
- *   {
- *     walletAddress: string,
- *     name: string,
- *     email: string,
- *     institution: string,
- *     role: 'teacher' | 'student',
- *     linkId: string,
- *     registeredAt: number,
- *     approvedAt: number | null,
- *     approvedBy: string | null,
- *     status: 'pending' | 'approved' | 'rejected'
- *   }
- */
-
 import { v4 as uuidv4 } from 'uuid';
-import { mfsWriteJSON, mfsReadJSON, mfsList, mfsExists, MFS } from './mfs';
+import { 
+  mfsWriteCSV, 
+  mfsReadCSV, 
+  mfsAppendCSVRow, 
+  mfsDeleteCSVRow,
+  mfsWriteJSON,
+  MFS 
+} from './mfs';
 
-// ─── Types ───────────────────────────────────────────────────
+export type Role = 'Teacher' | 'Student';
 
-export type Role = 'teacher' | 'student';
+export const REG_HEADERS = ['UniqueLinkId', 'Role', 'CreatedAt', 'CreatedBy', 'University', 'Department', 'Status'];
+export const TEACHER_ACCESS_HEADERS = ['Id', 'Name', 'WalletAddress', 'UniqueLinkId'];
+export const STUDENT_ACCESS_HEADERS = ['Id', 'Name', 'WalletAddress', 'UniqueLinkId'];
+export const AUDIT_HEADERS = ['Timestamp', 'Action', 'Category', 'User', 'Details'];
 
 export interface RegistrationLink {
   linkId: string;
   role: Role;
-  createdBy: string;
   createdAt: number;
-  expiresAt: number;
-  usedBy: string | null;
-  usedAt: number | null;
-  status: 'active' | 'used' | 'expired' | 'revoked';
+  createdBy: string;
+  university: string;
+  department: string;
+  status: 'active' | 'stopped' | 'deleted';
 }
 
-export interface UserProfile {
-  walletAddress: string;
-  name: string;
-  email: string;
-  institution: string;
-  role: Role;
-  linkId: string;
-  registeredAt: number;
-  approvedAt: number | null;
-  approvedBy: string | null;
-  status: 'pending' | 'approved' | 'rejected';
-}
-
-// ─── Link Generation (Admin only) ────────────────────────────
-
-/**
- * Generate a new registration link and store in IPFS MFS.
- * Fallback to localStorage if IPFS is unreachable.
- */
 export async function generateRegistrationLink(
   role: Role,
   adminAddress: string,
-): Promise<{ linkId: string; url: string; link: RegistrationLink }> {
+  university: string,
+  department: string,
+): Promise<{ linkId: string; url: string }> {
   const linkId = uuidv4();
   const now = Date.now();
-  const link: RegistrationLink = {
+  
+  const row = [
     linkId,
     role,
-    createdBy: adminAddress.toLowerCase(),
-    createdAt: now,
-    expiresAt: now + 7 * 24 * 60 * 60 * 1000, // 7 days
-    usedBy: null,
-    usedAt: null,
-    status: 'active',
-  };
+    now.toString(),
+    adminAddress.toLowerCase(),
+    university,
+    department,
+    'active'
+  ];
 
-  try {
-    await mfsWriteJSON(MFS.link(linkId), link);
-  } catch (err) {
-    console.warn('[LinkGen] MFS failed, falling back to localStorage', err);
-    const links = JSON.parse(localStorage.getItem('chain_edu_invites') || '[]');
-    links.push(link);
-    localStorage.setItem('chain_edu_invites', JSON.stringify(links));
-  }
+  await mfsAppendCSVRow(MFS.registrations, REG_HEADERS, row);
+  
+  // Log Audit
+  await logAudit('GENERATE_LINK', 'ADMIN', adminAddress, `Link generated for ${role} in ${university}`);
 
   const url = `${window.location.origin}/register/${linkId}`;
-  return { linkId, url, link };
+  return { linkId, url };
 }
 
-// ─── Link Validation ─────────────────────────────────────────
-
-export async function validateRegistrationLink(
-  linkId: string,
-): Promise<{ valid: boolean; link?: RegistrationLink; reason?: string }> {
-  let link = await mfsReadJSON<RegistrationLink>(MFS.link(linkId));
-
-  if (!link) {
-    // Check fallback
-    const links = JSON.parse(localStorage.getItem('chain_edu_invites') || '[]');
-    link = links.find((l: RegistrationLink) => l.linkId === linkId);
+export async function logAudit(action: string, category: string, user: string, details: string) {
+  try {
+    const row = [Date.now().toString(), action, category, user, details];
+    await mfsAppendCSVRow(MFS.audit, AUDIT_HEADERS, row);
+  } catch (e) {
+    console.error('[Audit] Log failed', e);
   }
+}
 
-  if (!link) return { valid: false, reason: 'Link not found or invalid' };
+export async function isStudentApproved(walletAddress: string): Promise<boolean> {
+  // Admin is always student-approved for testing
+  const { isAdminAddress } = await import('@/config/env');
+  if (isAdminAddress(walletAddress)) return true;
 
-  if (link.status === 'revoked') return { valid: false, reason: 'This link has been revoked by an admin' };
-  if (link.status === 'used') return { valid: false, reason: 'This link has already been used' };
+  const data = await mfsReadCSV(MFS.studentsAccess);
+  if (!data) return false;
+  return data.rows.some(r => r[2].toLowerCase() === walletAddress.toLowerCase());
+}
+
+export async function isTeacherApproved(walletAddress: string): Promise<boolean> {
+  // Admin is always teacher-approved for testing
+  const { isAdminAddress } = await import('@/config/env');
+  if (isAdminAddress(walletAddress)) return true;
+
+  const data = await mfsReadCSV(MFS.teachersAccess);
+  if (!data) return false;
+  return data.rows.some(r => r[2]?.toLowerCase() === walletAddress.toLowerCase());
+}
+
+export async function getAllLinks(viewerAddress?: string): Promise<RegistrationLink[]> {
+  const data = await mfsReadCSV(MFS.registrations);
+  if (!data) return [];
   
-  if (Date.now() > link.expiresAt || link.status === 'expired') {
-    if (link.status !== 'expired') {
-      link.status = 'expired';
-      try { await mfsWriteJSON(MFS.link(linkId), link); } catch {
-        const links = JSON.parse(localStorage.getItem('chain_edu_invites') || '[]');
-        const idx = links.findIndex((l: any) => l.linkId === linkId);
-        if (idx !== -1) { links[idx].status = 'expired'; localStorage.setItem('chain_edu_invites', JSON.stringify(links)); }
-      }
-    }
-    return { valid: false, reason: 'This registration link has expired (valid for 7 days)' };
+  const { isAdminAddress } = await import('@/config/env');
+  const isSysAdmin = viewerAddress ? isAdminAddress(viewerAddress) : false;
+
+  return data.rows.map(row => ({
+    linkId: row[0],
+    role: row[1] as Role,
+    createdAt: parseInt(row[2]),
+    createdBy: row[3],
+    university: row[4],
+    department: row[5],
+    status: row[6] as 'active' | 'stopped' | 'deleted'
+  })).filter(l => l.status !== 'deleted' && (isSysAdmin || !viewerAddress || l.createdBy.toLowerCase() === viewerAddress.toLowerCase()));
+}
+
+export async function toggleLinkStatus(linkId: string, status: 'active' | 'stopped'): Promise<void> {
+  const data = await mfsReadCSV(MFS.registrations);
+  if (data) {
+    const updatedRows = data.rows.map(r => {
+      const row = [...r];
+      if (row[0] === linkId) row[6] = status;
+      return row;
+    });
+    await mfsWriteCSV(MFS.registrations, REG_HEADERS, updatedRows);
+  }
+}
+
+export async function deleteLink(linkId: string): Promise<void> {
+  // Mark as deleted in Registrations.csv
+  const data = await mfsReadCSV(MFS.registrations);
+  if (data) {
+    const updatedRows = data.rows.map(r => {
+      if (r[0] === linkId) r[6] = 'deleted';
+      return r;
+    });
+    await mfsWriteCSV(MFS.registrations, REG_HEADERS, updatedRows);
   }
 
-  return { valid: true, link };
+  // Delete from access files if existed? 
+  // Client said: "When the link of registration is deleted, then delete the respective data in the csv file in the IPFS node."
+  await mfsDeleteCSVRow(MFS.teachersAccess, 3, linkId);
+  await mfsDeleteCSVRow(MFS.studentsAccess, 3, linkId);
 }
 
-// ─── User Registration ────────────────────────────────────────
+export interface TeacherRegistration {
+  name: string;
+  role: 'Teacher';
+  university: string;
+  department: string;
+  walletAddress: string;
+  linkId: string;
+}
 
-export async function registerUser(
-  linkId: string,
-  walletAddress: string,
-  name: string,
-  email: string,
-  institution: string,
-): Promise<{ success: boolean; error?: string }> {
-  const addr = walletAddress.toLowerCase();
+let failedAttemptsCount = 0;
+let lastAttemptTime = 0;
+const MAX_FAILED_ATTEMPTS = 5;
+const COOLDOWN_PERIOD = 60 * 1000; // 1 minute
 
-  const { valid, link, reason } = await validateRegistrationLink(linkId);
-  if (!valid || !link) return { success: false, error: reason };
-
-  const existsMFS = await mfsExists(MFS.pendingTeacher(addr)) || await mfsExists(MFS.pendingStudent(addr));
-  if (existsMFS) return { success: false, error: 'Wallet address already registered.' };
-
-  const profile: UserProfile = {
-    walletAddress: addr,
-    name: name.trim(),
-    email: email.trim().toLowerCase(),
-    institution: institution.trim(),
-    role: link.role,
-    linkId,
-    registeredAt: Date.now(),
-    approvedAt: null,
-    approvedBy: null,
-    status: 'pending',
-  };
-
-  try {
-    const path = link.role === 'teacher' ? MFS.pendingTeacher(addr) : MFS.pendingStudent(addr);
-    await mfsWriteJSON(path, profile);
-
-    // Update link status
-    const updatedLink: RegistrationLink = { ...link, usedBy: addr, usedAt: Date.now(), status: 'used' };
-    await mfsWriteJSON(MFS.link(linkId), updatedLink);
-
-  } catch (err) {
-    console.error('[Register] IPFS failed', err);
-    return { success: false, error: 'IPFS Error. Please ensure IPFS Desktop is running.' };
+export async function verifyLinkIsActive(linkId: string): Promise<boolean> {
+  const now = Date.now();
+  if (failedAttemptsCount >= MAX_FAILED_ATTEMPTS && (now - lastAttemptTime) < COOLDOWN_PERIOD) {
+    const waitSeconds = Math.ceil((COOLDOWN_PERIOD - (now - lastAttemptTime)) / 1000);
+    throw new Error(`Too many failed attempts. Please try again in ${waitSeconds} seconds.`);
   }
 
-  return { success: true };
+  const data = await mfsReadCSV(MFS.registrations);
+  if (!data) return false;
+  const linkRow = data.rows.find(r => r[0] === linkId);
+  
+  if (!linkRow || linkRow[6] !== 'active') {
+    failedAttemptsCount++;
+    lastAttemptTime = now;
+    return false;
+  }
+  
+  // Successful link check resets failure counter
+  failedAttemptsCount = 0;
+  return true;
 }
 
-// ─── Pending Users (Admin view) ──────────────────────────────
+export async function registerTeacher(data: TeacherRegistration): Promise<void> {
+  // SEC-TC-003 Link Validation
+  const isActive = await verifyLinkIsActive(data.linkId);
+  if (!isActive) {
+    throw new Error('This registration link is no longer active.');
+  }
 
-export async function getPendingTeachers(): Promise<UserProfile[]> {
-  try {
-    const files = await mfsList('/chainedu/registry/users/teachers');
-    const profiles: UserProfile[] = [];
-    for (const f of files) {
-      if (!f.endsWith('.json')) continue;
-      const p = await mfsReadJSON<UserProfile>(`/chainedu/registry/users/teachers/${f}`);
-      if (p && p.status === 'pending') profiles.push(p);
+  // Deduplication Check
+  const submissions = await mfsReadCSV('/Registrations/Submissions.csv');
+  const normalized = data.walletAddress.toLowerCase();
+  
+  if (submissions?.rows.some(r => r[5].toLowerCase() === normalized && r[7] !== 'rejected')) {
+    throw new Error('This wallet address is already registered or pending approval.');
+  }
+
+  const access = await mfsReadCSV(MFS.teachersAccess);
+  if (access?.rows.some(r => r[2].toLowerCase() === normalized)) {
+    throw new Error('This wallet address is already an approved teacher.');
+  }
+
+  const submissionHeaders = ['Id', 'Name', 'Role', 'University', 'Department', 'WalletAddress', 'UniqueLinkId', 'Status'];
+  const submissionRow = [
+    uuidv4(),
+    data.name,
+    'Teacher',
+    data.university,
+    data.department,
+    normalized,
+    data.linkId,
+    'pending'
+  ];
+  
+  await mfsAppendCSVRow('/Registrations/Submissions.csv', submissionHeaders, submissionRow);
+}
+
+export async function getPendingSubmissions(viewerAddress?: string): Promise<any[]> {
+  const data = await mfsReadCSV('/Registrations/Submissions.csv');
+  if (!data) return [];
+  
+  const { ENV, isAdminAddress } = await import('@/config/env');
+  const isSysAdmin = viewerAddress ? isAdminAddress(viewerAddress) : false;
+
+  return data.rows
+    .filter(r => {
+      const isPending = r[7] === 'pending';
+      const isTeacher = r[2] === 'Teacher' || r[2] === 'TEACHER';
+      const isStudent = r[2] === 'Student' || r[2] === 'STUDENT';
+      
+      // TC-001: Removed specific admin wallet filtering to prevent leakage.
+      // Logic now relies on general system admin role for visibility.
+      if (isTeacher && isPending) return true;
+      if (isStudent && isPending && isSysAdmin) return true;
+      return false;
+    })
+    .map(r => ({
+      id: r[0],
+      name: r[1],
+      role: r[2],
+      university: r[3],
+      department: r[4],
+      walletAddress: r[5],
+      linkId: r[6]
+    }));
+}
+
+export async function approveUser(id: string, status: 'approved' | 'rejected' = 'approved'): Promise<void> {
+  const data = await mfsReadCSV('/Registrations/Submissions.csv');
+  if (!data) return;
+  
+  const headers = ['Id', 'Name', 'Role', 'University', 'Department', 'WalletAddress', 'UniqueLinkId', 'Status'];
+  const submission = data.rows.find(r => r[0] === id);
+  if (!submission) return;
+
+  // Update status in Submissions.csv
+  const updatedRows = data.rows.map(r => {
+    const row = [...r];
+    if (row[0] === id) row[7] = status;
+    return row;
+  });
+  await mfsWriteCSV('/Registrations/Submissions.csv', headers, updatedRows);
+
+  // ONLY add to access list if APPROVED
+  if (status === 'approved') {
+    if (submission[2] === 'Teacher' || submission[2] === 'TEACHER') {
+      const accessRow = [
+        submission[0],
+        submission[1],
+        submission[5],
+        submission[6]
+      ];
+      await mfsAppendCSVRow(MFS.teachersAccess, TEACHER_ACCESS_HEADERS, accessRow);
     }
-    return profiles;
-  } catch { return []; }
-}
-
-export async function getPendingStudents(): Promise<UserProfile[]> {
-  try {
-    const files = await mfsList('/chainedu/registry/users/students');
-    const profiles: UserProfile[] = [];
-    for (const f of files) {
-      if (!f.endsWith('.json')) continue;
-      const p = await mfsReadJSON<UserProfile>(`/chainedu/registry/users/students/${f}`);
-      if (p && p.status === 'pending') profiles.push(p);
+    if (submission[2] === 'Student' || submission[2] === 'STUDENT') {
+      const { grantStudentAccess } = await import('@/utils/examUtils');
+      // Pass the row which has [Id, Name, Role, Univ, Dept, Wallet, LinkId, Status, TeacherAddr]
+      await grantStudentAccess(submission);
+      
+      // Also ensure they are in teacher's Registry file
+      const { addStudentToTeacherRegistry, getTeacherNameByWallet } = await import('@/utils/examUtils');
+      const teacherAddr = submission[8] || submission[7]; // Fallback to last if header shifted
+      const teacherName = await getTeacherNameByWallet(teacherAddr) || 'Admin_Approved';
+      await addStudentToTeacherRegistry(teacherName, { name: submission[1], walletAddress: submission[5] }, 'approved').catch(() => {});
     }
-    return profiles;
-  } catch { return []; }
+    
+    // Log Audit Approval
+    await logAudit('APPROVE_USER', 'AUTH', 'ADMIN', `Approved ${submission[2]} ${submission[1]} (${submission[5]})`);
+  } else {
+    // Log Audit Rejection
+    await logAudit('REJECT_USER', 'AUTH', 'ADMIN', `Rejected ${submission[2]} ${submission[1]} (${submission[5]})`);
+  }
 }
 
-export async function getAllUsers(): Promise<UserProfile[]> {
-  const t = await getPendingTeachers();
-  const s = await getPendingStudents();
-  return [...t, ...s];
+export async function registerStudent(data: { name: string, walletAddress: string, teacherName: string, linkId: string, teacherId?: string, university?: string, department?: string }): Promise<void> {
+  // SEC-TC-003 Link Validation
+  const isActive = await verifyLinkIsActive(data.linkId);
+  if (!isActive) {
+    throw new Error('This registration link is no longer active or invalid.');
+  }
+
+  const normalized = data.walletAddress.toLowerCase();
+
+  // Deduplication Check
+  const submissions = await mfsReadCSV('/Registrations/Submissions.csv');
+  if (submissions?.rows.some(r => r[5].toLowerCase() === normalized && r[7] !== 'rejected')) {
+    throw new Error('This wallet address is already registered or pending approval.');
+  }
+
+  const access = await mfsReadCSV('/Access/students.csv');
+  if (access?.rows.some(r => r[2].toLowerCase() === normalized)) {
+    throw new Error('This wallet address is already an approved student.');
+  }
+
+  // 1. Add to teacher's specific list
+  const headers = ['Name', 'WalletAddress', 'TeacherName', 'LinksId', 'Status'];
+  const row = [data.name, normalized, data.teacherName, data.linkId, 'pending'];
+  await mfsAppendCSVRow(MFS.teacherStudentList(data.teacherName), headers, row);
+  
+  // 2. Add to global submissions for admin/teacher approval visibility
+  const submissionHeaders = ['Id', 'Name', 'Role', 'University', 'Department', 'WalletAddress', 'UniqueLinkId', 'Status', 'TeacherIdentifier'];
+  const submissionRow = [
+    uuidv4(), 
+    data.name, 
+    'Student', 
+    data.university || 'ChainEdu University', 
+    data.department || 'General', 
+    normalized, 
+    data.linkId, 
+    'pending',
+    data.teacherId?.toLowerCase() || normalized // Use Teacher Address as identifier
+  ];
+  await mfsAppendCSVRow('/Registrations/Submissions.csv', submissionHeaders, submissionRow);
 }
 
-// ─── Approve / Reject (Admin/SubAdmin) ───────────────────────
-
-export async function approveUser(
-  walletAddress: string,
-  role: Role,
-  approvedBy: string,
-): Promise<void> {
-  const addr = walletAddress.toLowerCase();
-  const path = role === 'teacher' ? MFS.pendingTeacher(addr) : MFS.pendingStudent(addr);
-  const profile = await mfsReadJSON<UserProfile>(path);
-  if (!profile) throw new Error('User profile not found in IPFS');
-
-  const updated: UserProfile = {
-    ...profile,
-    status: 'approved',
-    approvedAt: Date.now(),
-    approvedBy: approvedBy.toLowerCase(),
-  };
-  await mfsWriteJSON(path, updated);
+export async function scheduleExam(uni: string, teacher: string, examName: string, startTime: string, endTime: string): Promise<void> {
+  const headers = ['TeacherName', 'ExamName', 'StartTime', 'EndTime'];
+  const row = [teacher, examName, startTime, endTime];
+  await mfsAppendCSVRow(MFS.examSchedule(uni, teacher), headers, row);
+  await logAudit('SCHEDULE_EXAM', 'EXAM', teacher, `Scheduled ${examName} for ${uni}`);
 }
 
-export async function rejectUser(
-  walletAddress: string,
-  role: Role,
-): Promise<void> {
-  const addr = walletAddress.toLowerCase();
-  const path = role === 'teacher' ? MFS.pendingTeacher(addr) : MFS.pendingStudent(addr);
-  const profile = await mfsReadJSON<UserProfile>(path);
-  if (!profile) throw new Error('User profile not found in IPFS');
-  await mfsWriteJSON(path, { ...profile, status: 'rejected' });
-}
-
-// ─── Link Management ─────────────────────────────────────────
-
-export async function getAllLinks(): Promise<RegistrationLink[]> {
-  try {
-    const files = await mfsList('/chainedu/registry/links');
-    const links: RegistrationLink[] = [];
-    for (const f of files) {
-      if (!f.endsWith('.json')) continue;
-      const l = await mfsReadJSON<RegistrationLink>(`/chainedu/registry/links/${f}`);
-      if (l) links.push(l);
-    }
-    return links;
-  } catch { return []; }
-}
-
-export async function revokeLink(linkId: string): Promise<void> {
-  const link = await mfsReadJSON<RegistrationLink>(MFS.link(linkId));
-  if (!link) throw new Error('Link not found');
-  await mfsWriteJSON(MFS.link(linkId), { ...link, status: 'revoked' });
+// "Parquet" Simulator
+export async function uploadQuestionPaper(uni: string, teacher: string, examName: string, data: any[]): Promise<void> {
+  const path = MFS.questionPaper(uni, teacher, examName);
+  // Simulate compression by writing a non-human readable string or just JSON for dev
+  await mfsWriteJSON(path, { data, compressed: true, format: 'parquet' });
+  await logAudit('UPLOAD_PAPER', 'EXAM', teacher, `Uploaded paper for ${examName} in ${uni}`);
 }

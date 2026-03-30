@@ -1,19 +1,3 @@
-/**
- * src/context/WalletContext.tsx
- *
- * Real MetaMask wallet connection using window.ethereum.
- *
- * Flow:
- *  1. User clicks "Connect Wallet"
- *  2. MetaMask popup → user approves
- *  3. We read the connected address
- *  4. We check RoleManager contract for role (if deployed)
- *  5. We check if address === ADMIN_ADDRESS (from .env) → force ADMIN role
- *  6. We expose role, address, chainId, isCorrectNetwork to all pages
- *
- * Chain: Ganache local (chainId 1337 / hex 0x539)
- */
-
 import React, {
   createContext,
   useContext,
@@ -24,8 +8,7 @@ import React, {
 } from 'react';
 import { ENV, isAdminAddress } from '@/config/env';
 import { TEST_MODE_ACTIVE, TEST_CREDENTIALS } from '../../test/testConfig';
-
-// ─── Types ───────────────────────────────────────────────────
+import { isTeacherApproved, getTeacherInfo, isStudentApproved } from '@/utils/examUtils';
 
 export type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'NONE' | null;
 
@@ -50,11 +33,9 @@ export interface WalletContextType extends WalletState {
   enableDemoMode: (role: Role) => void;
 }
 
-// ─── Ganache chain config ────────────────────────────────────
-const GANACHE_CHAIN_ID = ENV.CHAIN_ID; // 1337
-const GANACHE_HEX = `0x${GANACHE_CHAIN_ID.toString(16)}`; // 0x539
+const GANACHE_CHAIN_ID = ENV.CHAIN_ID;
+const GANACHE_HEX = `0x${GANACHE_CHAIN_ID.toString(16)}`;
 
-// ─── Utility: get Ethereum provider ─────────────────────────
 function getEthereum(): any {
   if (typeof window !== 'undefined' && (window as any).ethereum) {
     return (window as any).ethereum;
@@ -62,37 +43,45 @@ function getEthereum(): any {
   return null;
 }
 
-// ─── Utility: detect role from contract or env ───────────────
 async function detectRole(address: string): Promise<Role> {
   const normalizedAddr = address.toLowerCase();
 
-  // 1. TEST MODE Check: bypass contract entirely
+  // --- Test mode overrides ---
   if (TEST_MODE_ACTIVE === 1) {
     if (normalizedAddr === TEST_CREDENTIALS.admin.toLowerCase()) return 'ADMIN';
     if (normalizedAddr === TEST_CREDENTIALS.teacher.toLowerCase()) return 'TEACHER';
     if (TEST_CREDENTIALS.students.map(s => s.toLowerCase()).includes(normalizedAddr)) return 'STUDENT';
-    // If not found in test mode, fall through to default behavior, or just exit.
-    // Given the prompt, if test mode is active, maybe we just return NONE if not listed.
   }
 
-  // 2. Production mode check:
-  if (TEST_MODE_ACTIVE === 0) {
-    if (isAdminAddress(address)) return 'ADMIN';
-    // If not admin and test mode is off, we still check the contract for students/teachers!
-  }
-
-  // 3. Admin env check
+  // --- Always check hardcoded admin first ---
   if (isAdminAddress(address)) return 'ADMIN';
 
-  // 4. Try to read from RoleManager smart contract
+  // --- TEACHER_FLAG=1: check IPFS TeachersAccess.csv ---
+  if (ENV.TEACHER_FLAG === 1) {
+    try {
+      const approved = await isTeacherApproved(normalizedAddr);
+      if (approved) return 'TEACHER';
+    } catch (e) {
+      console.warn('[Auth] Teacher access check failed:', e);
+    }
+  }
+
+  // --- STUDENT_FLAG=1: check IPFS StudentsAccess.csv ---
+  if (ENV.STUDENT_FLAG === 1) {
+    try {
+      const approved = await isStudentApproved(normalizedAddr);
+      if (approved) return 'STUDENT';
+    } catch (e) {
+      console.warn('[Auth] Student access check failed:', e);
+    }
+  }
+
+  // --- Smart contract role lookup (production) ---
   try {
     const { default: addresses } = await import('@/contracts/addresses.json');
-    const { default: RoleManagerABI } = await import('@/contracts/abis/RoleManager.json');
-
     const ethers_like = getEthereum();
     if (!ethers_like) return 'NONE';
 
-    // Use eth_call directly without ethers to keep minimal deps
     const iface = {
       getRole: (addr: string) =>
         ({
@@ -102,7 +91,6 @@ async function detectRole(address: string): Promise<Role> {
               to: (addresses as any).RoleManager,
               data:
                 '0x' +
-                // getRole(address) selector = keccak256("getRole(address)")[0:4]
                 '96e76de5' +
                 addr.replace('0x', '').toLowerCase().padStart(64, '0'),
             },
@@ -114,11 +102,8 @@ async function detectRole(address: string): Promise<Role> {
     const payload = iface.getRole(address);
     const result: string = await ethers_like.request(payload);
 
-    // Decode the ABI-encoded string result
-    // result is 0x + offset(32) + length(32) + data(*)
     if (result && result.length > 2) {
       const hex = result.slice(2);
-      // String offset at position 0 (always 0x20)
       const lengthHex = hex.slice(64, 128);
       const length = parseInt(lengthHex, 16);
       const strHex = hex.slice(128, 128 + length * 2);
@@ -129,46 +114,143 @@ async function detectRole(address: string): Promise<Role> {
 
       if (decoded === 'ADMIN') return 'ADMIN';
       if (decoded === 'TEACHER') return 'TEACHER';
-      if (decoded === 'STUDENT') return 'STUDENT';
+      if (decoded === 'STUDENT') {
+        // Double check IPFS registry for STUDENT role
+        const approved = await isStudentApproved(normalizedAddr).catch(() => false);
+        return approved ? 'STUDENT' : 'NONE';
+      }
     }
-  } catch {
-    // Contract not deployed or read failed — fall through to NONE
-  }
+  } catch {}
 
   return 'NONE';
 }
 
-// ─── Context ─────────────────────────────────────────────────
-
 const WalletContext = createContext<WalletContextType | null>(null);
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<WalletState>({
-    isConnected: false,
-    address: null,
-    role: null,
-    did: null,
-    isDemoMode: false,
-    chainId: null,
-    isCorrectNetwork: false,
-    isConnecting: false,
-    error: null,
+  const [state, setState] = useState<WalletState>(() => {
+    // METAMASK_FLAG=0 → bypass as ADMIN
+    if (ENV.METAMASK_FLAG === 0) {
+      return {
+        isConnected: true,
+        address: '0x0000000000000000000000000000000000000admin',
+        role: 'ADMIN',
+        did: 'did:ethr:admin_bypass',
+        isDemoMode: true,
+        chainId: ENV.CHAIN_ID,
+        isCorrectNetwork: true,
+        isConnecting: false,
+        error: null,
+      };
+    }
+    // TEACHER_FLAG=0 (and METAMASK_FLAG=1) → bypass as TEACHER mock
+    if (ENV.TEACHER_FLAG === 0 && ENV.METAMASK_FLAG !== 0) {
+      return {
+        isConnected: true,
+        address: '0x0000000000000000000000000000000000teacher',
+        role: 'TEACHER',
+        did: 'did:ethr:teacher_bypass',
+        isDemoMode: true,
+        chainId: ENV.CHAIN_ID,
+        isCorrectNetwork: true,
+        isConnecting: false,
+        error: null,
+      };
+    }
+    // STUDENT_FLAG=0 (and METAMASK/TEACHER_FLAG != 0) → bypass as STUDENT mock
+    if (ENV.STUDENT_FLAG === 0 && ENV.TEACHER_FLAG !== 0 && ENV.METAMASK_FLAG !== 0) {
+      return {
+        isConnected: true,
+        address: '0x1234567890123456789012345678901234student',
+        role: 'STUDENT',
+        did: 'did:ethr:student_bypass',
+        isDemoMode: true,
+        chainId: ENV.CHAIN_ID,
+        isCorrectNetwork: true,
+        isConnecting: false,
+        error: null,
+      };
+    }
+    return {
+      isConnected: localStorage.getItem('chainedu_was_connected') === 'true',
+      address: null,
+      role: null,
+      did: null,
+      isDemoMode: false,
+      chainId: null,
+      isCorrectNetwork: false,
+      isConnecting: false,
+      error: null,
+    };
   });
 
-  // ─── Refresh role ──────────────────────────────────────────
+  // Session restoration on mount
+  useEffect(() => {
+    if (ENV.METAMASK_FLAG === 0) {
+      console.warn("[Auth] MetaMaskFlag=0: Plugged into Always-Admin mode.");
+      return;
+    }
+
+    const restoreSession = async () => {
+      const wasConnected = localStorage.getItem('chainedu_was_connected') === 'true';
+      const ethereum = getEthereum();
+      
+      if (wasConnected && ethereum) {
+        try {
+          const accounts: string[] = await ethereum.request({ method: 'eth_accounts' });
+          if (accounts && accounts.length > 0) {
+            const address = accounts[0].toLowerCase();
+            const chainIdHex: string = await ethereum.request({ method: 'eth_chainId' });
+            const chainId = parseInt(chainIdHex, 16);
+            const isCorrectNetwork = chainId === GANACHE_CHAIN_ID;
+            const role = isCorrectNetwork ? await detectRole(address) : null;
+
+            setState(prev => ({
+              ...prev,
+              isConnected: true,
+              address,
+              role,
+              did: `did:ethr:${address}`,
+              chainId,
+              isCorrectNetwork,
+              isConnecting: false
+            }));
+          } else {
+            // User likely disconnected from MetaMask UI
+            localStorage.removeItem('chainedu_was_connected');
+            setState(prev => ({ ...prev, isConnected: false, isConnecting: false }));
+          }
+        } catch (e) {
+          console.error("[Session] Restore failed:", e);
+          setState(prev => ({ ...prev, isConnecting: false }));
+        }
+      } else {
+        setState(prev => ({ ...prev, isConnecting: false }));
+      }
+    };
+
+    restoreSession();
+  }, []);
+
   const refreshRole = useCallback(async () => {
     if (!state.address) return;
     const role = await detectRole(state.address);
     setState((prev) => ({ ...prev, role }));
   }, [state.address]);
 
-  // ─── Connect wallet ────────────────────────────────────────
   const connectWallet = useCallback(async () => {
+    // IF flag is 0, DO NOT open MetaMask. Just return the mock state.
+    if (ENV.METAMASK_FLAG === 0) {
+      enableDemoMode('ADMIN');
+      return;
+    }
+
     const ethereum = getEthereum();
     if (!ethereum) {
       setState((prev) => ({
         ...prev,
-        error: 'MetaMask not detected. Please install MetaMask extension.',
+        error: 'MetaMask not detected. Please install MetaMask.',
+        isConnecting: false
       }));
       return;
     }
@@ -180,16 +262,34 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       });
 
       if (!accounts || accounts.length === 0) {
-        throw new Error('No accounts returned by MetaMask');
+        throw new Error('No accounts selected');
       }
 
       const address = accounts[0].toLowerCase();
       const chainIdHex: string = await ethereum.request({ method: 'eth_chainId' });
       const chainId = parseInt(chainIdHex, 16);
       const isCorrectNetwork = chainId === GANACHE_CHAIN_ID;
+      let role = isCorrectNetwork ? await detectRole(address) : null;
 
-      const role = isCorrectNetwork ? await detectRole(address) : null;
+      // SEC-TC-002: Signature Verification for ADMIN role
+      if (role === 'ADMIN' && ENV.METAMASK_FLAG === 1) {
+        try {
+          const message = `Authenticating as Admin for ${ENV.APP_NAME} at ${new Date().toISOString()}`;
+          const signature = await ethereum.request({
+            method: 'personal_sign',
+            params: [message, address],
+          });
+          
+          if (!signature) throw new Error('Signature rejected by user');
+          // Since we don't have a backend to verify, we're relying on the fact that personal_sign 
+          // successfully returned, meaning the user HAS the private key for this address.
+          // Note: Full security would require verifying the signature against the message+address.
+        } catch (signErr: any) {
+          throw new Error('Admin authentication required signature: ' + (signErr.message || 'Signature rejected'));
+        }
+      }
 
+      localStorage.setItem('chainedu_was_connected', 'true');
       setState({
         isConnected: true,
         address,
@@ -205,13 +305,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setState((prev) => ({
         ...prev,
         isConnecting: false,
-        error: err?.message ?? 'Failed to connect wallet',
+        error: err?.message?.includes('User rejected') ? 'Connection rejected by user' : (err?.message ?? 'Failed to connect wallet'),
       }));
     }
   }, []);
 
-  // ─── Disconnect wallet ─────────────────────────────────────
   const disconnectWallet = useCallback(() => {
+    localStorage.removeItem('chainedu_was_connected');
     setState({
       isConnected: false,
       address: null,
@@ -225,12 +325,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // ─── Select role ───────────────────────────────────────────
   const selectRole = useCallback((role: Role) => {
     setState((prev) => ({ ...prev, role }));
   }, []);
 
-  // ─── Enable demo mode ──────────────────────────────────────
   const enableDemoMode = useCallback((role: Role) => {
     setState({
       isConnected: true,
@@ -245,7 +343,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // ─── Switch to Ganache ─────────────────────────────────────
   const switchToCorrectNetwork = useCallback(async () => {
     const ethereum = getEthereum();
     if (!ethereum) return;
@@ -255,7 +352,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         params: [{ chainId: GANACHE_HEX }],
       });
     } catch (switchError: any) {
-      // Chain not added — add it
       if (switchError.code === 4902) {
         try {
           await ethereum.request({
@@ -272,14 +368,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         } catch {
           setState((prev) => ({
             ...prev,
-            error: 'Could not add Ganache network to MetaMask',
+            error: 'Could not add Ganache network',
           }));
         }
       }
     }
   }, []);
 
-  // ─── Listen to MetaMask account/chain changes ─────────────
   useEffect(() => {
     const ethereum = getEthereum();
     if (!ethereum) return;
@@ -303,7 +398,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         isCorrectNetwork,
         role: isCorrectNetwork ? prev.role : null,
       }));
-      // Refresh role when network changes
       if (isCorrectNetwork && state.address) {
         detectRole(state.address).then((role) =>
           setState((prev) => ({ ...prev, role })),
@@ -320,7 +414,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     };
   }, [disconnectWallet, state.address, state.isCorrectNetwork]);
 
-  // ─── Auto-reconnect if already authorised ─────────────────
   useEffect(() => {
     const ethereum = getEthereum();
     if (!ethereum) return;
@@ -334,6 +427,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           const chainId = parseInt(chainIdHex, 16);
           const isCorrectNetwork = chainId === GANACHE_CHAIN_ID;
           const role = isCorrectNetwork ? await detectRole(address) : null;
+          
           setState({
             isConnected: true,
             address,
@@ -345,9 +439,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             isConnecting: false,
             error: null,
           });
+        } else {
+           localStorage.removeItem('chainedu_was_connected');
+           setState(prev => ({ ...prev, isConnected: false }));
         }
       })
-      .catch(() => {/* silently skip auto-reconnect failures */});
+      .catch(() => {
+        setState(prev => ({ ...prev, isConnecting: false }));
+      });
   }, []);
 
   return (
@@ -372,3 +471,5 @@ export function useWallet(): WalletContextType {
   if (!ctx) throw new Error('useWallet must be used within WalletProvider');
   return ctx;
 }
+
+

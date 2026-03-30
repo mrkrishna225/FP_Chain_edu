@@ -5,79 +5,126 @@ import {
   SidebarGroupContent, SidebarMenu, SidebarMenuItem, SidebarMenuButton,
 } from '@/components/ui/sidebar';
 import {
-  LayoutDashboard, BookOpen, Zap, Clock, Shield, Link as LinkIcon,
-  PlusCircle, FileText, ShieldCheck, HardDrive, Users, Globe,
-  Activity, Fuel, ScrollText, GraduationCap,
+  LayoutDashboard, BookOpen, Zap, Clock, Shield,
+  FileText, ShieldCheck, Users, ScrollText, Activity, GraduationCap,
+  UserCheck, Award,
 } from 'lucide-react';
+import { ENV } from '@/config/env';
 
 const navItems = {
   STUDENT: [
-    { title: 'Dashboard', url: '/student/dashboard', icon: LayoutDashboard },
-    { title: 'My Courses', url: '/student/courses', icon: BookOpen },
-    { title: 'Active Exam', url: '/student/exam/exam-2', icon: Zap },
-    { title: 'Submission History', url: '/student/submissions', icon: Clock },
-    { title: 'My ZK Proofs', url: '/student/proofs', icon: Shield },
-    { title: 'Blockchain Receipts', url: '/student/proofs', icon: LinkIcon },
+    { title: 'My Exams',          url: '/student/dashboard',   icon: BookOpen },
+    { title: 'My Results',        url: '/student/results',     icon: Award },
   ],
   TEACHER: [
-    { title: 'Dashboard', url: '/teacher/dashboard', icon: LayoutDashboard },
-    { title: 'My Courses', url: '/teacher/courses', icon: BookOpen },
-    { title: 'Exam Management', url: '/teacher/upload', icon: FileText },
-    { title: 'Student Submissions', url: '/teacher/dashboard', icon: Users },
-    { title: 'Grade Verification', url: '/teacher/dashboard', icon: ShieldCheck },
-    { title: 'IPFS File Manager', url: '/teacher/upload', icon: HardDrive },
+    { title: 'Student Registry',  url: '/instructor/dashboard?s=registry',  icon: Users },
+    { title: 'Exam Papers',       url: '/instructor/dashboard?s=papers',    icon: FileText },
+    { title: 'Scheduler',         url: '/instructor/dashboard?s=scheduler', icon: Clock },
+    { title: 'Results',           url: '/instructor/dashboard?s=results',   icon: Award },
   ],
   ADMIN: [
-    { title: 'System Dashboard', url: '/admin/dashboard', icon: LayoutDashboard },
-    { title: 'All Users / DIDs', url: '/admin/users', icon: Users },
-    { title: 'All Courses', url: '/admin/dashboard', icon: BookOpen },
-    { title: 'All Exams', url: '/admin/dashboard', icon: FileText },
-    { title: 'Global Audit Log', url: '/admin/audit', icon: ScrollText },
-    { title: 'Smart Contract Status', url: '/admin/dashboard', icon: Globe },
-    { title: 'Gas Analytics', url: '/admin/dashboard', icon: Fuel },
+    { title: 'Overview',          url: '/admin/dashboard', icon: LayoutDashboard },
+    { title: 'Users',             url: '/admin/users',     icon: Users },
+    { title: 'Audit Logs',        url: '/admin/audit',     icon: ScrollText },
   ],
 };
 
+// Role color dots for topbar
+export const ROLE_BADGE_STYLE: Record<string, { label: string; bg: string; color: string }> = {
+  ADMIN:   { label: 'Admin',      bg: '#EDE9FE', color: '#7C3AED' },
+  TEACHER: { label: 'Instructor', bg: '#DBEAFE', color: '#1D4ED8' },
+  STUDENT: { label: 'Student',    bg: '#DCFCE7', color: '#15803D' },
+};
+
 export function AppSidebar() {
-  const { role } = useWallet();
+  const { role: walletRole } = useWallet();
   const location = useLocation();
-  const items = role ? navItems[role] : [];
+
+  // Determine effective role from URL path in bypass mode
+  let effectiveRole = walletRole;
+  if (ENV.METAMASK_FLAG === 0 || ENV.TEACHER_FLAG === 0) {
+    if (location.pathname.startsWith('/instructor')) effectiveRole = 'TEACHER';
+    else if (location.pathname.startsWith('/admin'))      effectiveRole = 'ADMIN';
+    else if (location.pathname.startsWith('/student'))    effectiveRole = 'STUDENT';
+  }
+
+  const items = effectiveRole ? (navItems[effectiveRole as keyof typeof navItems] || []) : [];
+  const roleInfo = effectiveRole ? ROLE_BADGE_STYLE[effectiveRole] : null;
 
   return (
-    <Sidebar className="border-r border-border bg-sidebar">
-      <SidebarContent className="pt-2">
-        <div className="px-4 py-3 flex items-center gap-2.5 mb-2">
-          <div className="p-1.5 rounded-lg bg-primary/20">
-            <GraduationCap className="h-5 w-5 text-primary" />
-          </div>
-          <span className="font-bold text-lg">Chain<span className="text-gradient">Edu</span></span>
+    <Sidebar style={{ background: '#FFFFFF', borderRight: '1px solid #E4E7EC', width: 240 }}>
+      {/* Brand */}
+      <div style={{ padding: '20px 16px 16px', borderBottom: '1px solid #E4E7EC' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <GraduationCap style={{ width: 20, height: 20, color: '#2563EB' }} />
+          <span style={{ fontSize: 16, fontWeight: 700, color: '#111827' }}>ChainEdu</span>
         </div>
+        {roleInfo && (
+          <span style={{
+            display: 'inline-flex', marginTop: 8, padding: '2px 8px',
+            borderRadius: 4, fontSize: 12, fontWeight: 500,
+            background: roleInfo.bg, color: roleInfo.color,
+          }}>
+            {roleInfo.label}
+          </span>
+        )}
+      </div>
 
+      <SidebarContent style={{ padding: '8px 0' }}>
         <SidebarGroup>
-          <SidebarGroupLabel className="text-xs uppercase tracking-wider text-muted-foreground">
+          <SidebarGroupLabel style={{
+            fontSize: 11, fontWeight: 500, color: '#9CA3AF',
+            textTransform: 'uppercase', letterSpacing: '0.05em',
+            padding: '16px 16px 4px',
+          }}>
             Navigation
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => {
-                const isActive = location.pathname === item.url || location.pathname.startsWith(item.url + '/');
-                const isLiveExam = item.title === 'Active Exam' && role === 'STUDENT';
+                const itemPath = item.url.split('?')[0];
+                const itemQuery = new URLSearchParams(item.url.split('?')[1] || '').get('s');
+                const currentQuery = new URLSearchParams(location.search).get('s');
+
+                const isActive = location.pathname === itemPath && (
+                  (itemQuery && currentQuery === itemQuery) ||
+                  (!currentQuery && itemQuery === 'registry') ||
+                  (!itemQuery && !currentQuery)
+                );
+
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton asChild>
                       <Link
                         to={item.url}
-                        className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${
-                          isActive
-                            ? 'bg-primary/15 text-primary font-medium'
-                            : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                        } ${isLiveExam ? 'btn-glow-amber' : ''}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 16px',
+                          fontSize: 14,
+                          fontWeight: isActive ? 500 : 400,
+                          color: isActive ? '#2563EB' : '#6B7280',
+                          background: isActive ? '#EFF6FF' : 'transparent',
+                          borderLeft: isActive ? '3px solid #2563EB' : '3px solid transparent',
+                          textDecoration: 'none',
+                          transition: 'background 100ms ease, color 100ms ease',
+                        }}
+                        onMouseEnter={e => {
+                          if (!isActive) {
+                            (e.currentTarget as HTMLElement).style.background = '#F7F8FA';
+                            (e.currentTarget as HTMLElement).style.color = '#111827';
+                          }
+                        }}
+                        onMouseLeave={e => {
+                          if (!isActive) {
+                            (e.currentTarget as HTMLElement).style.background = 'transparent';
+                            (e.currentTarget as HTMLElement).style.color = '#6B7280';
+                          }
+                        }}
                       >
-                        <item.icon className={`h-4 w-4 ${isLiveExam ? 'text-warning' : ''}`} />
+                        <item.icon style={{ width: 16, height: 16, flexShrink: 0 }} />
                         <span>{item.title}</span>
-                        {isLiveExam && (
-                          <span className="ml-auto w-2 h-2 rounded-full bg-warning pulse-glow-amber" />
-                        )}
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
@@ -86,14 +133,6 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        {role === 'TEACHER' && (
-          <div className="px-4 mt-4">
-            <Link to="/teacher/upload" className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 text-primary text-sm font-medium hover:bg-primary/20 transition-colors">
-              <PlusCircle className="h-4 w-4" /> Create Exam
-            </Link>
-          </div>
-        )}
       </SidebarContent>
     </Sidebar>
   );

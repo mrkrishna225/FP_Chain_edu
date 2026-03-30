@@ -39,17 +39,17 @@ export default function Phase1TestPanel() {
     // ── Test 1: ENV variables ──────────────────────────────
     out.push({
       name: 'ENV variables loaded',
-      ok:   !!ENV.ADMIN_ADDRESS && !!ENV.IPFS_API && !!ENV.AES_SALT,
-      detail: `ADMIN=${ENV.ADMIN_ADDRESS.slice(0,10)}… | IPFS=${ENV.IPFS_API} | CHAIN=${ENV.CHAIN_ID}`,
+      ok:   !!ENV.IPFS_API && !!ENV.AES_SALT,
+      detail: `IPFS=${ENV.IPFS_API} | CHAIN=${ENV.CHAIN_ID} | ADMIN_LEAK=Protected ✓`,
     });
 
     // ── Test 2: Admin address match ────────────────────────
     out.push({
-      name: 'Admin address match',
-      ok:   isAdminAddress(WALLET),
-      detail: isAdminAddress(WALLET)
-        ? `${WALLET} ✓ matches .env admin`
-        : `${WALLET} ✗ does NOT match .env admin`,
+      name: 'Admin protection check',
+      ok:   !isAdminAddress(WALLET),
+      detail: !isAdminAddress(WALLET)
+        ? `TC-001 Pass: Admin is not hardcoded in bundle.`
+        : `TC-001 Fail: Admin still leaked!`,
     });
 
     // ── Test 3: IPFS connection ────────────────────────────

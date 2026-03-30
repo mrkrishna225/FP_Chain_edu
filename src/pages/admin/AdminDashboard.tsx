@@ -1,191 +1,387 @@
+import React, { useState, useEffect } from 'react';
 import { GlassCard } from '@/components/shared/GlassCard';
-import { StatCard } from '@/components/shared/StatCard';
-import { StatusBadge, RoleBadge } from '@/components/shared/Badges';
-import { TxHashDisplay, DIDDisplay } from '@/components/shared/HashDisplays';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Progress } from '@/components/ui/progress';
-import { mockUsers, mockBlockchainEvents, mockGasData, gasOperationBreakdown } from '@/utils/mockData';
-import { Globe, HardDrive, Hexagon, Fuel, Users, ScrollText, Activity, ExternalLink } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
-
-const contracts = [
-  { name: 'IdentityRegistry', address: '0x1234...abcd', block: 14522700, txCount: 45, version: 'v1.2.0' },
-  { name: 'CourseRegistry', address: '0x5678...efgh', block: 14522710, txCount: 28, version: 'v1.1.0' },
-  { name: 'ExamRegistry', address: '0x9abc...ijkl', block: 14522720, txCount: 67, version: 'v1.3.0' },
-  { name: 'Verifier', address: '0xdef0...mnop', block: 14522730, txCount: 34, version: 'v2.0.0' },
-];
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Plus, Copy, Check, X, Trash2, ArrowRight, Users, Link as LinkIcon, GraduationCap, Building2, Play, Pause } from 'lucide-react';
+import { ENV } from '@/config/env';
+import { 
+  generateRegistrationLink, 
+  getAllLinks, 
+  deleteLink, 
+  getPendingSubmissions, 
+  approveUser, 
+  toggleLinkStatus,
+  type RegistrationLink 
+} from '@/utils/registrationLinks';
+import { mfsAppendCSVRow, MFS } from '@/utils/mfs';
+import { useNotifications } from '@/hooks/useNotifications';
+import { useToast } from '@/components/ui/use-toast';
+import { Badge } from '@/components/ui/badge';
+import { StatusBadge } from '@/components/shared/Badges';
+import { useWallet } from '@/context/WalletContext';
 
 export default function AdminDashboard() {
-  return (
-    <div className="space-y-6 max-w-7xl">
-      <h1 className="text-2xl font-bold">System Dashboard</h1>
+  const [links, setLinks] = useState<any[]>([]);
+  const [submissions, setSubmissions] = useState<any[]>([]);
+  const [selectedSubmissions, setSelectedSubmissions] = useState<string[]>([]);
+  const [university, setUniversity] = useState('');
+  const [department, setDepartment] = useState('');
+  const [role, setRole] = useState<'Teacher' | 'Student'>('Teacher');
+  const [generatedLink, setGeneratedLink] = useState<{ id: string; url: string } | null>(null);
+  const { toast } = useToast();
+  const { addNotification } = useNotifications();
+  const { address } = useWallet();
 
-      {/* Health cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <GlassCard className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Globe className="h-5 w-5 text-success" />
-            <StatusBadge variant="success" pulse>Online</StatusBadge>
-          </div>
-          <p className="text-sm font-medium">Smart Contracts</p>
-          <p className="text-xs text-muted-foreground">✅ 4/4 Deployed</p>
-        </GlassCard>
-        <GlassCard className="space-y-2">
-          <div className="flex items-center justify-between">
-            <HardDrive className="h-5 w-5 text-secondary" />
-            <StatusBadge variant="success" pulse>Connected</StatusBadge>
-          </div>
-          <p className="text-sm font-medium">IPFS / Pinata</p>
-          <Progress value={46.8} className="h-1.5" />
-          <p className="text-xs text-muted-foreground">234MB / 500MB</p>
-        </GlassCard>
-        <GlassCard className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Hexagon className="h-5 w-5 text-primary" />
-            <StatusBadge variant="success" pulse>Synced</StatusBadge>
-          </div>
-          <p className="text-sm font-medium">Polygon Network</p>
-          <p className="text-xs text-muted-foreground">Block #14,523,891 · 1.2s avg</p>
-        </GlassCard>
-        <GlassCard className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Fuel className="h-5 w-5 text-warning" />
-            <span className="font-mono text-xs text-warning">0.000001 GWEI</span>
-          </div>
-          <p className="text-sm font-medium">Gas Price</p>
-          <p className="text-xs text-muted-foreground">Ultra-low fees</p>
-        </GlassCard>
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    const [allLinks, pending] = await Promise.all([
+      getAllLinks(),
+      getPendingSubmissions()
+    ]);
+    setLinks(allLinks);
+    setSubmissions(pending);
+  };
+
+  const handleGenerate = async () => {
+    if (!university || !department) {
+      toast({ title: "Error", description: "Please fill University and Department", variant: "destructive" });
+      return;
+    }
+    try {
+      if (!address) throw new Error("Wallet not connected");
+      const result = await generateRegistrationLink(role, address, university, department);
+      setGeneratedLink({ id: result.linkId, url: result.url });
+      await loadData();
+      toast({ title: "Link Generated", description: "New unique registration link created." });
+      addNotification("Institutional Link Created", `New registration invite for ${role} is now live and anchored to IPFS.`, 'ADMIN', 'SUCCESS');
+    } catch (err: any) {
+      console.error(err);
+      toast({ title: "Generation Failed", description: err.message || "IPFS error", variant: "destructive" });
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast({ title: "Copied", description: "Link copied to clipboard." });
+  };
+
+  const handleDeleteLink = async (id: string) => {
+    try {
+      await deleteLink(id);
+      await loadData();
+      toast({ title: "Link Deleted", description: "Link and associated data revoked." });
+    } catch (err: any) {
+      toast({ title: "Delete Failed", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const handleToggleLinkStatus = async (linkId: string, currentStatus: string) => {
+    try {
+      const newStatus = currentStatus === 'active' ? 'stopped' : 'active';
+      await toggleLinkStatus(linkId, (newStatus as any));
+      toast({ title: "Updated", description: `Link status changed to ${newStatus}` });
+      loadData();
+    } catch (e) {
+      toast({ title: "Error", description: "Failed to update link status", variant: "destructive" });
+    }
+  };
+
+  const handleApprove = async (submissionId: string) => {
+    try {
+      await approveUser(submissionId);
+      toast({ title: "Success", description: "User approved successfully" });
+      addNotification("User Access Granted", `A new submission has been approved for institutional access. Registry updated.`, 'ADMIN', 'SUCCESS');
+      await loadData();
+      setSelectedSubmissions(prev => prev.filter(id => id !== submissionId));
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Approval failed", variant: "destructive" });
+    }
+  };
+
+  const handleReject = async (submissionId: string) => {
+    try {
+      // For now we just mark as rejected in the CSV or remove it
+      // Actually we'll mark as rejected to keep records
+      await approveUser(submissionId, 'rejected'); 
+      toast({ title: "Rejected", description: "Application rejected" });
+      loadData();
+      setSelectedSubmissions(prev => prev.filter(id => id !== submissionId));
+    } catch (e: any) {
+      toast({ title: "Error", description: "Rejection failed", variant: "destructive" });
+    }
+  };
+
+  const handleBulkAction = async (action: 'approve' | 'reject') => {
+    if (selectedSubmissions.length === 0) return;
+    
+    let successCount = 0;
+    for (const id of selectedSubmissions) {
+      try {
+        if (action === 'approve') await approveUser(id);
+        else await approveUser(id, 'rejected');
+        successCount++;
+      } catch (e) {
+        console.error(`Bulk action failed for ${id}`, e);
+      }
+    }
+    
+    toast({ 
+      title: "Bulk Action Complete", 
+      description: `Successfully ${action === 'approve' ? 'approved' : 'rejected'} ${successCount} out of ${selectedSubmissions.length} applications.` 
+    });
+    
+    loadData();
+    setSelectedSubmissions([]);
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedSubmissions(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedSubmissions.length === submissions.length) setSelectedSubmissions([]);
+    else setSelectedSubmissions(submissions.map(s => s.id));
+  };
+
+  return (
+    <div style={{ maxWidth: 1400, margin: '0 auto' }}>
+
+      {/* Page Header */}
+      <div style={{ marginBottom: 32, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
+        <div>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: '#111827', margin: '0 0 4px', lineHeight: 1.3 }}>System Dashboard</h1>
+          <p style={{ fontSize: 14, color: '#6B7280', margin: 0 }}>Institutional controls and user management</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 500, background: '#DBEAFE', color: '#1E3A8A', padding: '2px 8px', borderRadius: 4 }}>Admin</span>
+          <span style={{ fontSize: 12, fontWeight: 500, background: '#F3F4F6', color: '#374151', padding: '2px 8px', borderRadius: 4 }}>Local Network</span>
+        </div>
       </div>
 
-      <Tabs defaultValue="users" className="space-y-4">
-        <TabsList className="bg-muted/50">
-          <TabsTrigger value="users"><Users className="h-3.5 w-3.5 mr-1" /> Users</TabsTrigger>
-          <TabsTrigger value="audit"><ScrollText className="h-3.5 w-3.5 mr-1" /> Audit Log</TabsTrigger>
-          <TabsTrigger value="gas"><Activity className="h-3.5 w-3.5 mr-1" /> Gas Analytics</TabsTrigger>
-          <TabsTrigger value="contracts"><Globe className="h-3.5 w-3.5 mr-1" /> Contracts</TabsTrigger>
-        </TabsList>
+      {/* Generate Link Section */}
+      <div style={{ background: '#FFFFFF', border: '1px solid #E4E7EC', borderRadius: 8, padding: 24, marginBottom: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <div>
+            <h2 style={{ fontSize: 16, fontWeight: 600, color: '#111827', margin: '0 0 4px' }}>Generate Registration Link</h2>
+            <p style={{ fontSize: 13, color: '#6B7280', margin: 0 }}>Create unique invite links for teachers and students</p>
+          </div>
+          <button
+            onClick={handleGenerate}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px',
+              background: '#2563EB', color: '#FFFFFF', border: 'none', borderRadius: 6,
+              fontSize: 14, fontWeight: 500, cursor: 'pointer', transition: 'background 150ms ease',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = '#1D4ED8')}
+            onMouseLeave={e => (e.currentTarget.style.background = '#2563EB')}
+          >
+            <Plus style={{ width: 14, height: 14 }} /> Generate Link
+          </button>
+        </div>
 
-        <TabsContent value="users">
-          <GlassCard className="overflow-x-auto !p-0">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-muted-foreground">
-                  <th className="px-4 py-3 text-left font-medium">Name</th>
-                  <th className="px-4 py-3 text-left font-medium">DID</th>
-                  <th className="px-4 py-3 text-left font-medium">Role</th>
-                  <th className="px-4 py-3 text-left font-medium">Reg. Block</th>
-                  <th className="px-4 py-3 text-left font-medium">Last Active</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mockUsers.slice(0, 10).map(user => (
-                  <tr key={user.did} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
-                    <td className="px-4 py-3 font-medium">{user.name}</td>
-                    <td className="px-4 py-3"><DIDDisplay did={user.did} /></td>
-                    <td className="px-4 py-3"><RoleBadge role={user.role} /></td>
-                    <td className="px-4 py-3 font-mono text-xs">{user.registrationBlock.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{new Date(user.lastActive).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </GlassCard>
-        </TabsContent>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: generatedLink ? 16 : 0 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}>College / University</label>
+            <Input id="university" placeholder="e.g. Stanford University" value={university} onChange={e => setUniversity(e.target.value)} style={{ borderColor: '#E4E7EC' }} />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}>Department</label>
+            <Input id="department" placeholder="e.g. Computer Science" value={department} onChange={e => setDepartment(e.target.value)} style={{ borderColor: '#E4E7EC' }} />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}>Target Role</label>
+            <Select value={role} onValueChange={(v: any) => setRole(v)}>
+              <SelectTrigger style={{ borderColor: '#E4E7EC' }}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Teacher">Teacher</SelectItem>
+                <SelectItem value="Student">Student</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
 
-        <TabsContent value="audit">
-          <GlassCard className="overflow-x-auto !p-0">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-muted-foreground">
-                  <th className="px-4 py-3 text-left font-medium">Event</th>
-                  <th className="px-4 py-3 text-left font-medium">Actor</th>
-                  <th className="px-4 py-3 text-left font-medium">Details</th>
-                  <th className="px-4 py-3 text-left font-medium">Block</th>
-                  <th className="px-4 py-3 text-left font-medium">Tx Hash</th>
-                  <th className="px-4 py-3 text-left font-medium">Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mockBlockchainEvents.map(evt => (
-                  <tr key={evt.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
-                    <td className="px-4 py-3">
-                      <StatusBadge variant={
-                        evt.type === 'ProofVerified' ? 'success' :
-                        evt.type === 'AnswerSubmitted' ? 'warning' :
-                        evt.type === 'GradeCommitted' ? 'info' : 'default'
-                      }>{evt.type}</StatusBadge>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs">{evt.actorDid}</td>
-                    <td className="px-4 py-3 text-muted-foreground text-xs">{evt.details}</td>
-                    <td className="px-4 py-3 font-mono text-xs">{evt.blockNumber.toLocaleString()}</td>
-                    <td className="px-4 py-3"><TxHashDisplay hash={evt.txHash} /></td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{new Date(evt.timestamp).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </GlassCard>
-        </TabsContent>
-
-        <TabsContent value="gas">
-          <div className="grid md:grid-cols-2 gap-6">
-            <GlassCard className="space-y-4">
-              <h3 className="font-semibold">Gas Costs Over Time</h3>
-              <ResponsiveContainer width="100%" height={250}>
-                <LineChart data={mockGasData.slice(0, 14)}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 20% 18%)" />
-                  <XAxis dataKey="date" tick={{ fill: 'hsl(220 9% 46%)', fontSize: 11 }} />
-                  <YAxis tick={{ fill: 'hsl(220 9% 46%)', fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: 'hsl(221 39% 11%)', border: '1px solid hsl(220 20% 18%)', borderRadius: '8px', fontSize: 12 }} />
-                  <Legend />
-                  <Line type="monotone" dataKey="chainedu" stroke="hsl(263 83% 58%)" name="ChainEdu (zkEVM)" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="ethereum" stroke="hsl(0 84% 60%)" name="Ethereum L1" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </GlassCard>
-
-            <GlassCard className="space-y-4">
-              <h3 className="font-semibold">Per-Operation Breakdown</h3>
-              <div className="space-y-3">
-                {gasOperationBreakdown.map(op => (
-                  <div key={op.operation} className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
-                    <span className="text-sm">{op.operation}</span>
-                    <div className="text-right">
-                      <span className="font-mono text-xs text-primary">{op.chainEdu} POL</span>
-                      <span className="text-xs text-muted-foreground mx-2">vs</span>
-                      <span className="font-mono text-xs text-destructive">{op.ethereum} ETH</span>
-                      <StatusBadge variant="success" className="ml-2">{op.savings}</StatusBadge>
-                    </div>
-                  </div>
-                ))}
+        {generatedLink && (
+          <div style={{ padding: '12px 16px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 6 }}>
+            <p style={{ fontSize: 12, fontWeight: 500, color: '#14532D', marginBottom: 8 }}>Link generated successfully</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1, background: '#FFFFFF', border: '1px solid #E4E7EC', borderRadius: 6, padding: '8px 12px', fontFamily: 'monospace', fontSize: 12, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {generatedLink.url}
               </div>
-            </GlassCard>
+              <button
+                onClick={() => copyToClipboard(generatedLink.url)}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', background: '#FFFFFF', border: '1px solid #E4E7EC', borderRadius: 6, fontSize: 13, fontWeight: 500, color: '#374151', cursor: 'pointer' }}
+              >
+                <Copy style={{ width: 13, height: 13 }} /> Copy
+              </button>
+            </div>
           </div>
-        </TabsContent>
+        )}
+      </div>
 
-        <TabsContent value="contracts">
-          <div className="grid md:grid-cols-2 gap-4">
-            {contracts.map(c => (
-              <GlassCard key={c.name} className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold">{c.name}</h3>
-                  <StatusBadge variant="success" pulse>Active</StatusBadge>
-                </div>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between"><span className="text-muted-foreground">Address</span><span className="font-mono text-xs">{c.address}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">Deploy Block</span><span className="font-mono text-xs">{c.block.toLocaleString()}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">Total Txns</span><span>{c.txCount}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">ABI Version</span><span>{c.version}</span></div>
-                </div>
-                <Button size="sm" variant="outline" className="w-full text-xs border-primary/30 text-primary">
-                  <ExternalLink className="h-3 w-3 mr-1" /> View on Explorer
-                </Button>
-              </GlassCard>
+      {/* Invite Links Table */}
+      <div style={{ background: '#FFFFFF', border: '1px solid #E4E7EC', borderRadius: 8, marginBottom: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+        <div style={{ padding: '16px 24px', borderBottom: '1px solid #E4E7EC', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <LinkIcon style={{ width: 16, height: 16, color: '#6B7280' }} />
+          <h2 style={{ fontSize: 16, fontWeight: 600, color: '#111827', margin: 0 }}>Active Invite Links</h2>
+          <span style={{ marginLeft: 4, fontSize: 12, fontWeight: 500, background: '#F3F4F6', color: '#374151', padding: '1px 6px', borderRadius: 4 }}>{links.length}</span>
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow style={{ background: '#F7F8FA' }}>
+              <TableHead>Link ID</TableHead>
+              <TableHead>University</TableHead>
+              <TableHead>Department</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Created By</TableHead>
+              <TableHead>Date</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead style={{ textAlign: 'right' }}>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {links.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} style={{ textAlign: 'center', padding: '48px 16px', color: '#9CA3AF', fontSize: 14 }}>
+                  No links generated yet.
+                </TableCell>
+              </TableRow>
+            ) : links.map(l => (
+              <TableRow key={l.linkId}>
+                <TableCell style={{ fontFamily: 'monospace', fontSize: 11, color: '#9CA3AF' }}>{l.linkId.slice(0,8)}...</TableCell>
+                <TableCell style={{ fontWeight: 500 }}>{l.university}</TableCell>
+                <TableCell style={{ color: '#6B7280' }}>{l.department}</TableCell>
+                <TableCell>
+                  <span style={{
+                    fontSize: 12, fontWeight: 500, padding: '2px 8px', borderRadius: 4,
+                    background: l.role === 'Teacher' ? '#DBEAFE' : '#DCFCE7',
+                    color: l.role === 'Teacher' ? '#1D4ED8' : '#15803D',
+                  }}>{l.role}</span>
+                </TableCell>
+                <TableCell style={{ fontFamily: 'monospace', fontSize: 11, color: '#9CA3AF' }}>{l.createdBy.slice(0,6)}...{l.createdBy.slice(-4)}</TableCell>
+                <TableCell style={{ fontSize: 13, color: '#6B7280' }}>{new Date(l.createdAt).toLocaleDateString()}</TableCell>
+                <TableCell>
+                  <span style={{
+                    fontSize: 12, fontWeight: 500, padding: '2px 8px', borderRadius: 4,
+                    background: l.status === 'active' ? '#DCFCE7' : '#FEF3C7',
+                    color: l.status === 'active' ? '#14532D' : '#92400E',
+                  }}>{l.status}</span>
+                </TableCell>
+                <TableCell style={{ textAlign: 'right' }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}>
+                    <button title="Copy link" onClick={() => copyToClipboard(`${window.location.origin}/register/${l.linkId}`)}
+                      style={{ padding: '4px 8px', background: 'none', border: '1px solid #E4E7EC', borderRadius: 4, cursor: 'pointer', color: '#6B7280', fontSize: 12 }}>
+                      <Copy style={{ width: 12, height: 12 }} />
+                    </button>
+                    <button title={l.status === 'active' ? 'Stop' : 'Start'} onClick={() => handleToggleLinkStatus(l.linkId, l.status)}
+                      style={{ padding: '4px 8px', background: 'none', border: '1px solid #E4E7EC', borderRadius: 4, cursor: 'pointer', color: l.status === 'active' ? '#D97706' : '#16A34A', fontSize: 12 }}>
+                      {l.status === 'active' ? <Pause style={{ width: 12, height: 12 }} /> : <Play style={{ width: 12, height: 12 }} />}
+                    </button>
+                    <button title="Open link" onClick={() => window.open(`/register/${l.linkId}`, '_blank')}
+                      style={{ padding: '4px 8px', background: 'none', border: '1px solid #E4E7EC', borderRadius: 4, cursor: 'pointer', color: '#2563EB', fontSize: 12 }}>
+                      <ArrowRight style={{ width: 12, height: 12 }} />
+                    </button>
+                    <button title="Delete" onClick={() => handleDeleteLink(l.linkId)}
+                      style={{ padding: '4px 8px', background: 'none', border: '1px solid #FECACA', borderRadius: 4, cursor: 'pointer', color: '#DC2626', fontSize: 12 }}>
+                      <Trash2 style={{ width: 12, height: 12 }} />
+                    </button>
+                  </div>
+                </TableCell>
+              </TableRow>
             ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* Pending Approvals */}
+      <div style={{ background: '#FFFFFF', border: '1px solid #E4E7EC', borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+        <div style={{ padding: '16px 24px', borderBottom: '1px solid #E4E7EC', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Users style={{ width: 16, height: 16, color: '#6B7280' }} />
+            <h2 style={{ fontSize: 16, fontWeight: 600, color: '#111827', margin: 0 }}>Pending Approvals</h2>
+            {submissions.length > 0 && (
+              <span style={{ fontSize: 12, fontWeight: 500, background: '#FEF3C7', color: '#92400E', padding: '1px 6px', borderRadius: 4 }}>{submissions.length}</span>
+            )}
           </div>
-        </TabsContent>
-      </Tabs>
+          {selectedSubmissions.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, color: '#6B7280' }}>{selectedSubmissions.length} selected</span>
+              <button onClick={() => handleBulkAction('approve')} style={{ padding: '6px 12px', background: '#FFFFFF', border: '1px solid #BBF7D0', borderRadius: 6, fontSize: 13, fontWeight: 500, color: '#16A34A', cursor: 'pointer' }}>
+                <Check style={{ width: 12, height: 12, display: 'inline', marginRight: 4 }} />Approve All
+              </button>
+              <button onClick={() => handleBulkAction('reject')} style={{ padding: '6px 12px', background: '#FFFFFF', border: '1px solid #FECACA', borderRadius: 6, fontSize: 13, fontWeight: 500, color: '#DC2626', cursor: 'pointer' }}>
+                <X style={{ width: 12, height: 12, display: 'inline', marginRight: 4 }} />Reject All
+              </button>
+            </div>
+          )}
+        </div>
+
+        <Table>
+          <TableHeader>
+            <TableRow style={{ background: '#F7F8FA' }}>
+              <TableHead style={{ width: 40 }}>
+                <input type="checkbox"
+                  checked={submissions.length > 0 && selectedSubmissions.length === submissions.length}
+                  onChange={toggleSelectAll}
+                  style={{ accentColor: '#2563EB' }}
+                />
+              </TableHead>
+              <TableHead>Name</TableHead>
+              <TableHead>Wallet Address</TableHead>
+              <TableHead>Institution</TableHead>
+              <TableHead>Link ID</TableHead>
+              <TableHead style={{ textAlign: 'right' }}>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {submissions.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} style={{ textAlign: 'center', padding: '48px 16px', color: '#9CA3AF', fontSize: 14 }}>
+                  No pending approvals. All clear.
+                </TableCell>
+              </TableRow>
+            ) : submissions.map(s => (
+              <TableRow key={s.id} style={{ background: selectedSubmissions.includes(s.id) ? '#EFF6FF' : '#FFFFFF' }}>
+                <TableCell>
+                  <input type="checkbox" checked={selectedSubmissions.includes(s.id)} onChange={() => toggleSelect(s.id)} style={{ accentColor: '#2563EB' }} />
+                </TableCell>
+                <TableCell style={{ fontWeight: 500 }}>{s.name}</TableCell>
+                <TableCell style={{ fontFamily: 'monospace', fontSize: 11, color: '#6B7280' }}>
+                  {s.walletAddress.slice(0,8)}...{s.walletAddress.slice(-6)}
+                </TableCell>
+                <TableCell>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 2px' }}>{s.university}</p>
+                    <p style={{ fontSize: 12, color: '#6B7280', margin: 0 }}>{s.department}</p>
+                  </div>
+                </TableCell>
+                <TableCell style={{ fontFamily: 'monospace', fontSize: 11, color: '#9CA3AF' }}>...{s.linkId.slice(-8)}</TableCell>
+                <TableCell style={{ textAlign: 'right' }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button onClick={() => handleApprove(s.id)}
+                      style={{ padding: '5px 12px', background: '#FFFFFF', border: '1px solid #BBF7D0', borderRadius: 6, fontSize: 13, fontWeight: 500, color: '#16A34A', cursor: 'pointer' }}>
+                      Approve
+                    </button>
+                    <button onClick={() => handleReject(s.id)}
+                      style={{ padding: '5px 12px', background: '#FFFFFF', border: '1px solid #FECACA', borderRadius: 6, fontSize: 13, fontWeight: 500, color: '#DC2626', cursor: 'pointer' }}>
+                      Reject
+                    </button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }
+
+

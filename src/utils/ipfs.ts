@@ -1,42 +1,18 @@
-/**
- * src/utils/ipfs.ts
- *
- * IPFS HTTP client singleton — uses kubo-rpc-client (compatible with Kubo v0.40.1).
- *
- * Your IPFS Desktop shows:
- *   GATEWAY  http://127.0.0.1:8082
- *   KUBO RPC /ip4/127.0.0.1/tcp/5001
- *
- * Vite proxies /ipfs-api → http://127.0.0.1:5001 (see vite.config.ts)
- * so VITE_IPFS_API=http://localhost:8080/ipfs-api
- *
- * CORS setup (do once in IPFS Desktop → Settings → JSON):
- *   "API": {
- *     "HTTPHeaders": {
- *       "Access-Control-Allow-Origin": ["http://localhost:8080","http://127.0.0.1:8080"],
- *       "Access-Control-Allow-Methods": ["PUT","POST","GET","DELETE","OPTIONS"],
- *       "Access-Control-Allow-Headers": ["Authorization","Content-Type"]
- *     }
- *   }
- * Then restart IPFS Desktop.
- */
-
 import { create, type KuboRPCClient } from 'kubo-rpc-client';
 import { ENV } from '@/config/env';
 
-// ─── Singleton client ────────────────────────────────────────
 let _client: KuboRPCClient | null = null;
 
 export function getIPFSClient(): KuboRPCClient {
-  if (!_client) {
-    // During development the Vite proxy forwards /ipfs-api → 127.0.0.1:5001
-    // so we get zero CORS issues. In production point directly to your node.
-    _client = create({ url: ENV.IPFS_API });
+  const url = ENV.IPFS_API;
+  if (!_client || (_client as any)._lastUrl !== url) {
+    _client = create({ url: new URL(url) });
+    (_client as any)._lastUrl = url;
+    console.log(`[IPFS] Client initialized at: ${url}`);
   }
   return _client;
 }
 
-// ─── Health check ────────────────────────────────────────────
 export async function checkIPFSConnection(): Promise<{
   ok: boolean;
   peerId?: string;
@@ -57,7 +33,6 @@ export async function checkIPFSConnection(): Promise<{
   }
 }
 
-// ─── Add content (returns CID string) ─────────────────────────
 export async function ipfsAdd(
   content: string | Uint8Array,
   pin = true,
@@ -67,7 +42,6 @@ export async function ipfsAdd(
   return result.cid.toString();
 }
 
-// ─── Fetch content by CID ─────────────────────────────────────
 export async function ipfsCat(cid: string): Promise<string> {
   const client = getIPFSClient();
   const chunks: Uint8Array[] = [];
@@ -83,8 +57,8 @@ export async function ipfsCat(cid: string): Promise<string> {
   return new TextDecoder().decode(total);
 }
 
-// ─── Pin a CID so it survives GC ──────────────────────────────
 export async function ipfsPin(cid: string): Promise<void> {
   const client = getIPFSClient();
   await client.pin.add(cid);
 }
+

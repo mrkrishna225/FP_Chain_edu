@@ -1,5 +1,4 @@
 import { type LucideIcon } from 'lucide-react';
-import { GlassCard } from './GlassCard';
 import { cn } from '@/utils/lib_utils';
 
 interface StatCardProps {
@@ -7,26 +6,26 @@ interface StatCardProps {
   value: string | number;
   icon: LucideIcon;
   accent?: 'primary' | 'secondary' | 'success' | 'warning';
+  subtext?: string;
   className?: string;
 }
 
-const accentColors = {
-  primary: 'text-primary bg-primary/10',
-  secondary: 'text-secondary bg-secondary/10',
-  success: 'text-success bg-success/10',
-  warning: 'text-warning bg-warning/10',
-};
-
-export function StatCard({ title, value, icon: Icon, accent = 'primary', className }: StatCardProps) {
+export function StatCard({ title, value, icon: Icon, accent = 'primary', subtext, className }: StatCardProps) {
   return (
-    <GlassCard className={cn('flex items-center gap-4', className)}>
-      <div className={cn('p-3 rounded-xl', accentColors[accent])}>
-        <Icon className="h-6 w-6" />
+    <div className={cn(
+      'bg-white border border-[#E4E7EC] rounded-lg p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]',
+      className
+    )}>
+      <div className="flex items-start justify-between">
+        <div className="flex-1 min-w-0">
+          <p style={{ fontSize: 13, fontWeight: 500, color: '#6B7280', marginBottom: 8 }}>{title}</p>
+          <p style={{ fontSize: 28, fontWeight: 700, color: '#111827', lineHeight: 1.2 }}>{value}</p>
+          {subtext && <p style={{ fontSize: 13, color: '#6B7280', marginTop: 4 }}>{subtext}</p>}
+        </div>
+        <div className="stat-icon flex-shrink-0" style={{ width: 40, height: 40, background: '#F7F8FA', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icon style={{ width: 20, height: 20, color: '#6B7280' }} />
+        </div>
       </div>
-      <div>
-        <p className="text-sm text-muted-foreground">{title}</p>
-        <p className="text-2xl font-bold">{value}</p>
-      </div>
-    </GlassCard>
+    </div>
   );
 }

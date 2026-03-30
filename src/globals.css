@@ -1,251 +1,99 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+/* globals.css — Minimum overrides for shadcn/ui component appearance */
 
-:root {
-  /* CSS VARIABLES (full design system) */
-  --bg-primary: #0a0f1e;
-  /* deepest dark navy */
-  --bg-secondary: #0d1526;
-  /* card backgrounds */
-  --bg-tertiary: #111827;
-  /* sidebar, elevated surfaces */
-  --bg-glass: rgba(13, 21, 38, 0.7);
-  /* glassmorphism */
-  --border-glass: rgba(0, 212, 255, 0.15);
-  --accent-blue: #00d4ff;
-  /* electric blue — primary CTA */
-  --accent-green: #39ff14;
-  /* neon green — success/online */
-  --accent-amber: #f59e0b;
-  /* warnings */
-  --accent-red: #ef4444;
-  /* danger/revoke */
-  --accent-purple: #8b5cf6;
-  /* teacher role color */
-
-  --text-primary: #e2e8f0;
-  /* main text */
-  --text-secondary: #94a3b8;
-  /* muted text */
-  --text-muted: #475569;
-  /* very muted */
-
-  --font-ui: 'Outfit', sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
-
-  --radius-sm: 6px;
-  --radius-md: 12px;
-  --radius-lg: 20px;
-
-  --shadow-glow-blue: 0 0 20px rgba(0, 212, 255, 0.3);
-  --shadow-glow-green: 0 0 20px rgba(57, 255, 20, 0.3);
-
-  --transition-fast: 150ms ease;
-  --transition-base: 250ms ease;
-  --transition-slow: 400ms ease;
+/* Shadcn Button overrides */
+[data-slot="button"] {
+  border-radius: 6px !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  transition: background 150ms ease, border-color 150ms ease !important;
+  box-shadow: none !important;
 }
 
-/* GLOBAL STYLES */
+/* Primary variant */
+[data-variant="default"],
+.btn[class*="bg-primary"] {
+  background-color: #2563EB !important;
+  color: #FFFFFF !important;
+  border: none !important;
+}
+
+/* Input overrides */
+input, textarea, select {
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  border-radius: 6px;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: #2563EB !important;
+  box-shadow: 0 0 0 3px rgba(37,99,235,0.10) !important;
+  outline: none !important;
+}
+
+/* Table */
+table { border-collapse: collapse; width: 100%; }
+thead tr { background: #F7F8FA; }
+thead th {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6B7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid #E4E7EC;
+}
+tbody tr { background: #FFFFFF; border-bottom: 1px solid #E4E7EC; }
+tbody tr:hover { background: #F7F8FA; }
+tbody td { padding: 12px 16px; font-size: 14px; color: #111827; }
+
+/* Dropdown/Select */
+[data-radix-popper-content-wrapper] {
+  border-radius: 8px !important;
+}
+[role="listbox"], [role="menu"] {
+  background: #FFFFFF !important;
+  border: 1px solid #E4E7EC !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08) !important;
+  padding: 4px !important;
+}
+
+/* Toast override */
+[data-sonner-toast] {
+  background: #FFFFFF !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.10) !important;
+  border: 1px solid #E4E7EC !important;
+}
+
+/* Strip all glow animations globally */
 * {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+  text-shadow: none !important;
 }
 
-body {
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: var(--font-ui);
+/* Override any dark backgrounds from old theme */
+.bg-background { background-color: #F7F8FA !important; }
+.bg-card       { background-color: #FFFFFF !important; }
+.border-border  { border-color: #E4E7EC !important; }
+.text-foreground{ color: #111827 !important; }
+.text-muted-foreground { color: #6B7280 !important; }
+
+/* Sidebar */
+[data-sidebar="sidebar"],
+aside[aria-label*="sidebar"],
+nav[aria-label*="sidebar"] {
+  background: #FFFFFF !important;
+  border-right: 1px solid #E4E7EC !important;
 }
 
-/* ANIMATED GRID BACKGROUND */
-.animated-grid {
-  background-image: radial-gradient(var(--text-muted) 1px, transparent 1px);
-  background-size: 30px 30px;
-  background-position: 0 0;
-  animation: pulse-grid 3s ease-in-out infinite alternate;
+/* Progress bar */
+[role="progressbar"] > * {
+  background: #2563EB !important;
 }
 
-@keyframes pulse-grid {
-  0% {
-    opacity: 0.3;
-  }
-
-  100% {
-    opacity: 0.6;
-  }
-}
-
-/* GLASSMORPHISM CARD MIXIN */
-.glass-card {
-  background: var(--bg-glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border-glass);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-}
-
-/* SCROLLBAR STYLES */
-::-webkit-scrollbar {
-  width: 4px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 212, 255, 0.4);
-  border-radius: var(--radius-sm);
-}
-
-/* UTILITY CLASSES */
-.glow-blue {
-  box-shadow: var(--shadow-glow-blue);
-}
-
-.glow-green {
-  box-shadow: var(--shadow-glow-green);
-}
-
-.mono {
-  font-family: var(--font-mono);
-}
-
-/* Role Badges */
-.badge-admin {
-  background-color: rgba(0, 212, 255, 0.15);
-  color: var(--accent-blue);
-  padding: 2px 8px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 600;
-  border: 1px solid var(--accent-blue);
-}
-
-.badge-teacher {
-  background-color: rgba(139, 92, 246, 0.15);
-  color: var(--accent-purple);
-  padding: 2px 8px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 600;
-  border: 1px solid var(--accent-purple);
-}
-
-.badge-student {
-  background-color: rgba(57, 255, 20, 0.15);
-  color: var(--accent-green);
-  padding: 2px 8px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 600;
-  border: 1px solid var(--accent-green);
-}
-
-.badge-none {
-  background-color: rgba(239, 68, 68, 0.15);
-  color: var(--accent-red);
-  padding: 2px 8px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 600;
-  border: 1px solid var(--accent-red);
-}
-
-/* Shimmer Loading */
-.shimmer {
-  position: relative;
-  overflow: hidden;
-  background-color: var(--bg-secondary);
-  border-radius: var(--radius-sm);
-}
-
-.shimmer::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  background: linear-gradient(90deg,
-      rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.05) 50%,
-      rgba(255, 255, 255, 0) 100%);
-  animation: shimmer-anim 1.5s infinite;
-}
-
-@keyframes shimmer-anim {
-  0% {
-    transform: translateX(-100%);
-  }
-
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-/* Animations included here for convenience */
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes fadeInLeft {
-  from {
-    opacity: 0;
-    transform: translateX(-20px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(100%);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes pulse-glow {
-  0% {
-    filter: drop-shadow(0 0 2px var(--accent-blue));
-  }
-
-  50% {
-    filter: drop-shadow(0 0 10px var(--accent-blue));
-  }
-
-  100% {
-    filter: drop-shadow(0 0 2px var(--accent-blue));
-  }
-}
-
-@keyframes spin-slow {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.page-enter {
-  animation: fadeInUp 0.4s ease forwards;
-}
+/* Scrollbar (light) */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #F7F8FA; }
+::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }

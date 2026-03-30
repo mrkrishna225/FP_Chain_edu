@@ -1,27 +1,24 @@
 import { useCallback } from 'react';
 import addresses from '../contracts/addresses.json';
 
-// Pre-import all ABI files statically so Vite/esbuild can resolve them.
-// After `truffle migrate`, these files are overwritten with real ABIs.
-const ABI_MODULES = import.meta.glob('../contracts/abis/*.json', { eager: true });
+const ABI_MODULES: any = import.meta.glob('../contracts/abis/*.json', { eager: true });
 
-function getABI(contractName) {
+function getABI(contractName: string) {
   const key = `../contracts/abis/${contractName}.json`;
   const mod = ABI_MODULES[key];
   if (!mod) throw new Error(`ABI not found for ${contractName}. Run truffle migrate first.`);
   return mod.default ?? mod;
 }
 
-export const useContract = (web3) => {
-  const getContract = useCallback(async (contractName) => {
+export const useContract = (web3: any) => {
+  const getContract = useCallback(async (contractName: string) => {
     if (!web3) return null;
     try {
       const abi = getABI(contractName);
-      const address = addresses[contractName];
+      const address = (addresses as any)[contractName];
       if (!address) throw new Error(`${contractName} address not found in addresses.json`);
       return new web3.eth.Contract(abi, address);
-    } catch (err) {
-      console.error(`Failed to load ${contractName} contract`, err);
+    } catch {
       return null;
     }
   }, [web3]);
