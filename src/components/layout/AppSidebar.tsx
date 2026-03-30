@@ -13,27 +13,27 @@ import { ENV } from '@/config/env';
 
 const navItems = {
   STUDENT: [
-    { title: 'My Exams',          url: '/student/dashboard',   icon: BookOpen },
-    { title: 'My Results',        url: '/student/results',     icon: Award },
+    { title: 'My Exams', url: '/student/dashboard', icon: BookOpen },
+    { title: 'My Results', url: '/student/results', icon: Award },
   ],
   TEACHER: [
-    { title: 'Student Registry',  url: '/instructor/dashboard?s=registry',  icon: Users },
-    { title: 'Exam Papers',       url: '/instructor/dashboard?s=papers',    icon: FileText },
-    { title: 'Scheduler',         url: '/instructor/dashboard?s=scheduler', icon: Clock },
-    { title: 'Results',           url: '/instructor/dashboard?s=results',   icon: Award },
+    { title: 'Student Registry', url: '/instructor/dashboard?s=registry', icon: Users },
+    { title: 'Exam Papers', url: '/instructor/dashboard?s=papers', icon: FileText },
+    { title: 'Scheduler', url: '/instructor/dashboard?s=scheduler', icon: Clock },
+    { title: 'Results', url: '/instructor/dashboard?s=results', icon: Award },
   ],
   ADMIN: [
-    { title: 'Overview',          url: '/admin/dashboard', icon: LayoutDashboard },
-    { title: 'Users',             url: '/admin/users',     icon: Users },
-    { title: 'Audit Logs',        url: '/admin/audit',     icon: ScrollText },
+    { title: 'Overview', url: '/admin/dashboard', icon: LayoutDashboard },
+    { title: 'Users', url: '/admin/users', icon: Users },
+    { title: 'Audit Logs', url: '/admin/audit', icon: ScrollText },
   ],
 };
 
 // Role color dots for topbar
 export const ROLE_BADGE_STYLE: Record<string, { label: string; bg: string; color: string }> = {
-  ADMIN:   { label: 'Admin',      bg: '#EDE9FE', color: '#7C3AED' },
+  ADMIN: { label: 'Admin', bg: '#EDE9FE', color: '#7C3AED' },
   TEACHER: { label: 'Instructor', bg: '#DBEAFE', color: '#1D4ED8' },
-  STUDENT: { label: 'Student',    bg: '#DCFCE7', color: '#15803D' },
+  STUDENT: { label: 'Student', bg: '#DCFCE7', color: '#15803D' },
 };
 
 export function AppSidebar() {
@@ -44,8 +44,8 @@ export function AppSidebar() {
   let effectiveRole = walletRole;
   if (ENV.METAMASK_FLAG === 0 || ENV.TEACHER_FLAG === 0) {
     if (location.pathname.startsWith('/instructor')) effectiveRole = 'TEACHER';
-    else if (location.pathname.startsWith('/admin'))      effectiveRole = 'ADMIN';
-    else if (location.pathname.startsWith('/student'))    effectiveRole = 'STUDENT';
+    else if (location.pathname.startsWith('/admin')) effectiveRole = 'ADMIN';
+    else if (location.pathname.startsWith('/student')) effectiveRole = 'STUDENT';
   }
 
   const items = effectiveRole ? (navItems[effectiveRole as keyof typeof navItems] || []) : [];
