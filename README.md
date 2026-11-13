@@ -1,31 +1,23 @@
-# FP Chain Edu — Blockchain Academic Verification System (Truffle & Ganache)
+# FP Chain Edu
 
-> Decentralized educational record verification platform leveraging Truffle, Ganache, Ethereum smart contracts, and IPFS.
+The smart contract and blockchain infrastructure for [Immutable Academics](https://github.com/mrkrishna225/final-year-proj).
 
-### Tech Stack & Topics
-`blockchain` | `truffle` | `ganache` | `ethereum` | `ipfs` | `smart-contracts` | `typescript`
+Contains the Truffle project with Solidity contracts, migration scripts, and a local Ganache
+test network setup for credential issuance and verification.
 
+## What's here
 
-FP Chain Edu provides the local blockchain test harness, smart contract deployment scripts, and Ethereum network simulation for the Immutable Academics ecosystem using Truffle and Ganache.
+- Solidity smart contracts for credential registration and verification
+- Truffle migration and deployment scripts
+- Ganache config for local Ethereum simulation
+- IPFS hash storage and retrieval integration
 
-###  Tech Stack & Topics
-`blockchain` `truffle` `ganache` `ethereum` `ipfs` `smart-contracts` `typescript`
+## Setup
 
----
-
-###  Features
-- **Truffle Suite:** Contract compilation, automated migration scripts, and unit testing.
-- **Ganache Simulation:** Local deterministic Ethereum test network for rapid development and testing.
-- **IPFS Integration:** Automated pinning and hash retrieval for student record verification.
-
----
-
-###  Getting Started
 ```bash
-git clone https://github.com/mrkrishna225/FP_Chain_edu.git
-cd FP_Chain_edu
+npm install
+truffle compile
+truffle migrate --network development
 ```
 
-<div align="center">
-  <sub>Maintained by <a href="https://github.com/mrkrishna225"><b>mrkrishna225</b></a></sub>
-</div>
+Requires [Ganache](https://trufflesuite.com/ganache/) running locally.
